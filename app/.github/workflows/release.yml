@@ -1,0 +1,38 @@
+name: release
+
+# Build the MSI on every version tag and attach it to the GitHub release.
+# This is the other half of the skeleton's self-update: the app downloads the
+# .msi from the latest release, so a release must actually carry one.
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  msi:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Install cargo-wix
+        run: cargo install cargo-wix --locked
+
+      - name: Install WiX Toolset
+        run: choco install wixtoolset -y --no-progress
+
+      - name: Build MSI
+        run: cargo wix --nocapture
+
+      - name: Attach MSI to release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: target/wix/*.msi

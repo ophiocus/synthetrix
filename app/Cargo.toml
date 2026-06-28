@@ -1,0 +1,36 @@
+[package]
+name = "synthetrix"
+version = "0.1.0"
+edition = "2021"
+authors = ["ophiocus <csantanad@gmail.com>"]
+description = "CivitAI checkpoint/LoRA harvester: fetch, pick, manifest with NVMe hotload"
+license = "MIT"
+
+[dependencies]
+eframe = { version = "0.28", default-features = false, features = ["default_fonts", "glow", "persistence"] }
+egui = "0.28"
+egui_extras = { version = "0.28", features = ["all_loaders"] }
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "webp"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+dirs = "5"
+rfd = "0.14"
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "rustls-tls"] }
+rusqlite = { version = "0.31", features = ["bundled"] }
+sha2 = "0.10"
+flate2 = "1"
+
+[build-dependencies]
+winres = "0.1"
+
+[package.metadata.wix]
+upgrade-guid = "FE0265EA-BB63-4968-BF77-27DD0ED1A5F7"
+path-guid    = "7F3D2F51-2CFD-4AC6-9090-C941161B7EA3"
+license      = false
+eula         = false
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+strip = true
