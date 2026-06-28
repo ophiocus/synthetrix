@@ -1,0 +1,61 @@
+# Synthetrix — CivitAI harvester configuration
+# Paths use forward slashes; Python handles them fine on Windows.
+
+[storage]
+# HDD vault: the authoritative model tree + catalog DB live here.
+vault_root   = "H:/Models"
+catalog_dir  = "H:/Models/.civitai"          # catalog.sqlite + usage-doc sidecars
+gallery_root = "H:/Models/.civitai/gallery"  # downloaded example images + workflows
+# NVMe staging: where models get promoted on demand for an active ComfyUI run.
+nvme_root    = "E:/model loader/ComfyUI/models"
+# How to promote: "symlink" (no copy, needs admin/Dev-Mode) or "copy".
+promote_mode = "copy"
+
+# Map CivitAI model types -> subfolder under both vault_root and nvme_root.
+[storage.subdir]
+Checkpoint      = "checkpoints"
+LORA            = "loras"
+LoCon           = "loras"
+TextualInversion = "embeddings"
+Controlnet      = "controlnet"
+VAE             = "vae"
+Upscaler        = "upscale_models"
+
+[crawl]
+# Curated top-N harvest. One pass per (type x base_model x query).
+# Checkpoint/LORA/LoCon = the big NSFW carriers; TextualInversion = tiny concepts.
+types       = ["Checkpoint", "LORA", "LoCon", "TextualInversion"]
+base_models = ["Flux.1 D", "Flux.1 S", "SDXL 1.0", "Pony", "Illustrious", "SD 1.5"]
+nsfw        = true        # requires a Red-opted-in API token
+top_n       = 150         # items kept per (type x base_model x query)
+page_size   = 100         # API max
+
+# Each query is a distinct ranking lens; results are merged + deduped.
+[[crawl.query]]
+sort   = "Most Downloaded"
+period = "AllTime"
+
+[[crawl.query]]
+sort   = "Highest Rated"
+period = "AllTime"
+
+[[crawl.query]]
+sort   = "Newest"
+period = "Month"
+
+[images]
+# Example-image harvest. Lazy by design:
+#   * build_index.py downloads ONE starter preview per model (the list thumb).
+#   * fetch.py downloads the full `per_model` set + workflows WHEN you download
+#     the actual model — images are only kept for models you select.
+# Images come from the model JSON (modelVersions[0].images, up to 20) — no extra
+# API call. Workflows live in PNG text chunks; JPEG/WebP originals are stripped.
+per_model    = 20          # images per model, pulled on model download (10 or 20)
+include_video = true       # the gallery includes mp4 clips
+nsfw         = true
+
+[api]
+base_url        = "https://civitai.com/api/v1"
+# Token is read from $CIVITAI_TOKEN or a .env file — never stored here.
+requests_per_min = 90     # polite throttle; CivitAI 429s on abuse
+max_retries      = 5

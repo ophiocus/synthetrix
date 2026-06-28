@@ -1,0 +1,18 @@
+# Secrets
+.env
+
+# Python
+__pycache__/
+*.pyc
+
+# Local data (catalog lives on H:, but never track DBs/logs if any land here)
+*.sqlite
+*.sqlite-*
+*.log
+
+# Rust build artifacts
+/app/target/
+*.msi
+
+# Claude Code local session config
+.claude/
