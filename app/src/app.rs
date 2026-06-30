@@ -1,7 +1,7 @@
 use crate::config::Config;
 use crate::db;
 use crate::git_update::UpdateState;
-use crate::worker::{Cmd, Event, Worker};
+use crate::worker::{CoverFetcher, Cmd, Event, Worker};
 use eframe::egui;
 use std::collections::HashSet;
 use std::sync::mpsc;
@@ -14,6 +14,13 @@ pub enum Tab {
     Settings,
 }
 
+/// Per-model cover thumbnail state (resolved against the on-disk cache).
+pub enum CoverState {
+    Requested,
+    Ready(String),
+    Missing,
+}
+
 /// Picker filter inputs (UI-side; sent to the worker as a db::PickFilter).
 pub struct PickerUi {
     pub type_idx: usize, // 0 = All, else config.types[idx-1]
@@ -22,6 +29,8 @@ pub struct PickerUi {
     pub only_downloaded: bool,
     pub min_downloads: String,
     pub limit: String,
+    pub cover_px: f32,   // cover thumbnail height in the list
+    pub sort_idx: usize, // 0 = downloads, 1 = likes
 }
 
 impl Default for PickerUi {
@@ -33,6 +42,85 @@ impl Default for PickerUi {
             only_downloaded: false,
             min_downloads: String::new(),
             limit: "200".into(),
+            cover_px: 220.0,
+            sort_idx: 0,
+        }
+    }
+}
+
+/// Full-size image "silverbox" overlay. Opened by clicking a captured image
+/// (image view) or its ⓘ button (info view). On open it loads the image's
+/// workflow + A1111 params, and if exactly one side is present it synthesizes the
+/// other via `convert` and caches it next to the image.
+pub struct Lightbox {
+    pub model_id: i64,
+    pub image_path: String,
+    pub wf_path: Option<String>,
+    pub pr_path: Option<String>,
+    pub wf_graph: Option<crate::wfgraph::WGraph>,
+    pub wf_view: crate::wfgraph::WfView,
+    pub params_text: String,
+    pub show_info: bool,
+    pub note: Option<String>,
+}
+
+impl Lightbox {
+    pub fn open(
+        model_id: i64,
+        image_path: &str,
+        wf: Option<String>,
+        pr: Option<String>,
+        show_info: bool,
+    ) -> Self {
+        use std::path::Path;
+        let p = Path::new(image_path);
+        let dir = p.parent().map(|d| d.to_path_buf()).unwrap_or_default();
+        let stem = p.file_stem().and_then(|s| s.to_str()).unwrap_or("img").to_string();
+        let mut wf_path = wf;
+        let mut pr_path = pr;
+        let mut note = None;
+
+        let wf_text0 = wf_path.as_ref().and_then(|p| std::fs::read_to_string(p).ok());
+        let pr_text0 = pr_path.as_ref().and_then(|p| std::fs::read_to_string(p).ok());
+
+        // synthesize + cache whichever side is missing
+        let (wf_text, pr_text) = match (wf_text0, pr_text0) {
+            (Some(w), None) => {
+                let synth = crate::convert::workflow_to_params(&w);
+                if let Some(ptxt) = &synth {
+                    let dst = dir.join(format!("{stem}.params.txt"));
+                    if std::fs::write(&dst, ptxt).is_ok() {
+                        pr_path = Some(dst.to_string_lossy().into_owned());
+                        note = Some("Synthesized A1111 params from the workflow (cached).".into());
+                    }
+                }
+                (Some(w), synth)
+            }
+            (None, Some(p)) => {
+                let synth = crate::convert::params_to_workflow(&p);
+                if let Some(wtxt) = &synth {
+                    let dst = dir.join(format!("{stem}.workflow.json"));
+                    if std::fs::write(&dst, wtxt).is_ok() {
+                        wf_path = Some(dst.to_string_lossy().into_owned());
+                        note = Some("Synthesized ComfyUI workflow from A1111 params (cached).".into());
+                    }
+                }
+                (synth, Some(p))
+            }
+            (w, p) => (w, p),
+        };
+
+        let wf_graph = wf_text.as_deref().and_then(crate::wfgraph::parse);
+        Self {
+            model_id,
+            image_path: image_path.to_string(),
+            wf_path,
+            pr_path,
+            wf_graph,
+            wf_view: crate::wfgraph::WfView::default(),
+            params_text: pr_text.unwrap_or_default(),
+            show_info,
+            note,
         }
     }
 }
@@ -40,6 +128,7 @@ impl Default for PickerUi {
 pub struct SynthetrixApp {
     pub config: Config,
     pub worker: Worker,
+    pub covers_pool: CoverFetcher,
     pub tab: Tab,
 
     pub status: Option<String>,
@@ -53,6 +142,16 @@ pub struct SynthetrixApp {
     pub audit: Option<db::AuditReport>,
     pub selected: HashSet<i64>,
     pub picker_ui: PickerUi,
+    pub covers: std::collections::HashMap<i64, CoverState>,
+    /// Model whose info/trigger-words overlay is open, + its text buffer.
+    pub info_open: Option<i64>,
+    pub info_text: String,
+    /// Manifest rows expanded to show their captured-image strip, + path cache.
+    /// Each entry: (image_path, optional workflow.json, optional params.txt).
+    pub manifest_expanded: std::collections::HashSet<i64>,
+    pub manifest_imgs: std::collections::HashMap<i64, Vec<(String, Option<String>, Option<String>)>>,
+    /// Full-size image + workflow/params overlay (the "silverbox").
+    pub lightbox: Option<Lightbox>,
 
     // Self-update plumbing (inherited from the skeleton).
     pub update_state: UpdateState,
@@ -72,6 +171,12 @@ impl SynthetrixApp {
         egui_extras::install_image_loaders(&cc.egui_ctx);
 
         let worker = Worker::spawn(config.clone(), cc.egui_ctx.clone());
+        let covers_pool = CoverFetcher::spawn(
+            &config,
+            cc.egui_ctx.clone(),
+            worker.evt_tx.clone(),
+            6,
+        );
         let _ = worker.tx.send(Cmd::QueryManifest);
 
         let (tx, rx) = mpsc::channel();
@@ -82,6 +187,7 @@ impl SynthetrixApp {
         Self {
             config,
             worker,
+            covers_pool,
             tab: Tab::Fetcher,
             status: None,
             busy: false,
@@ -92,6 +198,12 @@ impl SynthetrixApp {
             audit: None,
             selected: HashSet::new(),
             picker_ui: PickerUi::default(),
+            covers: std::collections::HashMap::new(),
+            info_open: None,
+            info_text: String::new(),
+            manifest_expanded: std::collections::HashSet::new(),
+            manifest_imgs: std::collections::HashMap::new(),
+            lightbox: None,
             update_state: UpdateState::Checking,
             update_error: None,
             update_rx: Some(rx),
@@ -119,6 +231,11 @@ impl SynthetrixApp {
             },
             min_downloads: self.picker_ui.min_downloads.parse().unwrap_or(0),
             limit: self.picker_ui.limit.parse().unwrap_or(200),
+            sort: if self.picker_ui.sort_idx == 1 {
+                "thumbs".into()
+            } else {
+                "downloads".into()
+            },
         }
     }
 
@@ -142,6 +259,12 @@ impl SynthetrixApp {
                 Event::Picks(v) => self.picks = v,
                 Event::Manifest(v) => self.manifest = v,
                 Event::Audit(r) => self.audit = Some(r),
+                Event::CoverReady(id, path) => {
+                    self.covers.insert(id, CoverState::Ready(path));
+                }
+                Event::CoverFailed(id) => {
+                    self.covers.insert(id, CoverState::Missing);
+                }
                 Event::Error(e) => {
                     let msg = format!("⚠ {e}");
                     self.log.push(msg.clone());

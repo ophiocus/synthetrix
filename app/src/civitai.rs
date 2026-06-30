@@ -121,9 +121,47 @@ impl Client {
         Ok(ModelsPage { items, next_cursor })
     }
 
-    /// Fetch raw bytes (used for example images). Returns (content_type, bytes).
+    /// Full model object by id (includes all versions + files).
+    pub fn model_by_id(&mut self, id: i64) -> Result<Value, String> {
+        let url = format!("{}/models/{}", self.base_url, id);
+        self.get_json(&url, &[])
+    }
+
+    /// Identify a local file by hash. Returns the model-version object, or None
+    /// if CivitAI has no match (404). Accepts SHA256/AutoV2/Blake3/etc.
+    pub fn model_version_by_hash(&mut self, hash: &str) -> Result<Option<Value>, String> {
+        let url = format!("{}/model-versions/by-hash/{}", self.base_url, hash);
+        for attempt in 0..self.max_retries {
+            self.throttle();
+            match self.auth(self.http.get(&url)).send() {
+                Ok(r) => {
+                    let code = r.status().as_u16();
+                    if code == 404 {
+                        return Ok(None);
+                    }
+                    if code == 429 || code >= 500 {
+                        std::thread::sleep(Duration::from_secs(2u64.pow(attempt + 1)));
+                        continue;
+                    }
+                    if !r.status().is_success() {
+                        return Err(format!("HTTP {code} (by-hash)"));
+                    }
+                    return r.json::<Value>().map(Some).map_err(|e| e.to_string());
+                }
+                Err(e) => {
+                    if attempt + 1 == self.max_retries {
+                        return Err(e.to_string());
+                    }
+                    std::thread::sleep(Duration::from_secs(2u64.pow(attempt)));
+                }
+            }
+        }
+        Err("exhausted retries (by-hash)".into())
+    }
+
+    /// Fetch raw bytes (images/covers). Hits image.civitai.com CDN — not the
+    /// rate-limited API — so no throttle.
     pub fn get_bytes(&mut self, url: &str) -> Result<(String, Vec<u8>), String> {
-        self.throttle();
         let r = self
             .auth(self.http.get(url))
             .send()
@@ -152,38 +190,102 @@ impl Client {
         dest: &Path,
         mut progress: impl FnMut(u64, u64),
     ) -> Result<String, String> {
-        self.throttle();
-        let mut r = self
-            .auth(self.http.get(url))
-            .send()
-            .map_err(|e| e.to_string())?;
-        if !r.status().is_success() {
-            return Err(format!("HTTP {} downloading", r.status().as_u16()));
-        }
-        let total = r.content_length().unwrap_or(0);
+        // Token must ride in the query string: CivitAI 302-redirects downloads to
+        // its S3/CDN host, and reqwest strips the Authorization header on cross-host
+        // redirects — so bearer_auth alone loses the credential for gated/NSFW files.
+        let url = match &self.token {
+            Some(t) => {
+                let sep = if url.contains('?') { '&' } else { '?' };
+                format!("{url}{sep}token={t}")
+            }
+            None => url.to_string(),
+        };
         let tmp = dest.with_extension("part");
         if let Some(parent) = dest.parent() {
             std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
         }
-        let mut f = std::fs::File::create(&tmp).map_err(|e| e.to_string())?;
-        let mut hasher = Sha256::new();
-        let mut buf = [0u8; 1 << 20];
-        let mut done = 0u64;
-        loop {
-            let n = r.read(&mut buf).map_err(|e| e.to_string())?;
-            if n == 0 {
-                break;
+        // Retry the whole download on 429 / 5xx / transient stream errors, with
+        // exponential backoff that honors a Retry-After header when present.
+        for attempt in 0..self.max_retries {
+            self.throttle();
+            let mut r = match self.auth(self.http.get(url.as_str())).send() {
+                Ok(r) => r,
+                Err(e) => {
+                    if attempt + 1 == self.max_retries {
+                        return Err(e.to_string());
+                    }
+                    std::thread::sleep(Duration::from_secs(2u64.pow(attempt)));
+                    continue;
+                }
+            };
+            let code = r.status().as_u16();
+            if code == 429 || code >= 500 {
+                let wait = retry_after(&r).unwrap_or_else(|| 2u64.pow(attempt + 1)).min(60);
+                std::thread::sleep(Duration::from_secs(wait));
+                continue;
             }
-            hasher.update(&buf[..n]);
-            f.write_all(&buf[..n]).map_err(|e| e.to_string())?;
-            done += n as u64;
-            progress(done, total);
+            if !r.status().is_success() {
+                return Err(format!("HTTP {code} downloading"));
+            }
+            // A stripped-auth response is often a 200 HTML login page — never a model.
+            if let Some(ct) = r
+                .headers()
+                .get(reqwest::header::CONTENT_TYPE)
+                .and_then(|h| h.to_str().ok())
+            {
+                if ct.starts_with("text/html") {
+                    return Err("got HTML (auth/redirect failure), not a model file".into());
+                }
+            }
+
+            let total = r.content_length().unwrap_or(0);
+            let mut f = std::fs::File::create(&tmp).map_err(|e| e.to_string())?;
+            let mut hasher = Sha256::new();
+            let mut buf = [0u8; 1 << 20];
+            let mut done = 0u64;
+            let mut stream_err: Option<String> = None;
+            loop {
+                match r.read(&mut buf) {
+                    Ok(0) => break,
+                    Ok(n) => {
+                        hasher.update(&buf[..n]);
+                        if let Err(e) = f.write_all(&buf[..n]) {
+                            stream_err = Some(e.to_string());
+                            break;
+                        }
+                        done += n as u64;
+                        progress(done, total);
+                    }
+                    Err(e) => {
+                        stream_err = Some(e.to_string());
+                        break;
+                    }
+                }
+            }
+            if let Some(e) = stream_err {
+                drop(f);
+                let _ = std::fs::remove_file(&tmp);
+                if attempt + 1 == self.max_retries {
+                    return Err(e);
+                }
+                std::thread::sleep(Duration::from_secs(2u64.pow(attempt)));
+                continue;
+            }
+            f.flush().ok();
+            drop(f);
+            std::fs::rename(&tmp, dest).map_err(|e| e.to_string())?;
+            return Ok(format!("{:x}", hasher.finalize()));
         }
-        f.flush().ok();
-        drop(f);
-        std::fs::rename(&tmp, dest).map_err(|e| e.to_string())?;
-        Ok(format!("{:x}", hasher.finalize()))
+        Err("rate-limited (429) — exhausted retries; try again shortly".into())
     }
+}
+
+/// Parse a Retry-After header (seconds form) into a duration in seconds.
+fn retry_after(r: &reqwest::blocking::Response) -> Option<u64> {
+    r.headers()
+        .get(reqwest::header::RETRY_AFTER)
+        .and_then(|h| h.to_str().ok())
+        .and_then(|s| s.trim().parse::<u64>().ok())
 }
 
 #[cfg(test)]

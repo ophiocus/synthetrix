@@ -3,10 +3,12 @@
 mod app;
 mod civitai;
 mod config;
+mod convert;
 mod db;
 mod git_update;
 mod pngmeta;
 mod tabs;
+mod wfgraph;
 mod worker;
 
 use eframe::egui;

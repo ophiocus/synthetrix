@@ -36,7 +36,7 @@ impl Default for Config {
             vault_root: "H:/Models".into(),
             catalog_dir: "H:/Models/.civitai".into(),
             gallery_root: "H:/Models/.civitai/gallery".into(),
-            nvme_root: "E:/model loader/ComfyUI/models".into(),
+            nvme_root: "F:/tinyforge/ComfyUI/ComfyUI/models".into(),
             token: String::new(),
             types: ["Checkpoint", "LORA", "LoCon", "TextualInversion"]
                 .iter()
@@ -92,6 +92,11 @@ impl Config {
         } else {
             std::env::var("CIVITAI_TOKEN").ok().filter(|s| !s.is_empty())
         }
+    }
+
+    /// Local on-disk cache for Picker cover thumbnails.
+    pub fn covers_dir(&self) -> PathBuf {
+        std::path::Path::new(&self.gallery_root).join(".covers")
     }
 
     /// Vault/NVMe subfolder for a CivitAI model type.

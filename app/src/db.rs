@@ -198,6 +198,7 @@ pub struct PickFilter {
     pub status: Option<String>,
     pub min_downloads: i64,
     pub limit: i64,
+    pub sort: String, // "downloads" (default) | "thumbs"
 }
 
 #[derive(Clone)]
@@ -209,7 +210,7 @@ pub struct PickRow {
     pub base_model: String,
     pub nsfw: bool,
     pub downloads: i64,
-    pub rating: f64,
+    pub thumbs_up: i64,
     pub size_kb: f64,
     pub trained_words: String,
     pub status: String,
@@ -220,7 +221,7 @@ pub struct PickRow {
 pub fn query_picks(conn: &Connection, f: &PickFilter) -> Result<Vec<PickRow>, String> {
     let mut sql = String::from(
         "SELECT f.file_id, m.model_id, m.name, m.type, v.base_model, m.nsfw,
-                m.downloads, m.rating, f.size_kb, v.trained_words, f.status, f.locked,
+                m.downloads, m.thumbs_up, f.size_kb, v.trained_words, f.status, f.locked,
                 m.cover_url
          FROM models m
          JOIN versions v ON v.model_id=m.model_id AND v.version_idx=0
@@ -242,7 +243,11 @@ pub fn query_picks(conn: &Connection, f: &PickFilter) -> Result<Vec<PickRow>, St
     if f.min_downloads > 0 {
         sql.push_str(&format!(" AND m.downloads >= {}", f.min_downloads));
     }
-    sql.push_str(" ORDER BY m.downloads DESC");
+    let order = match f.sort.as_str() {
+        "thumbs" => "m.thumbs_up",
+        _ => "m.downloads",
+    };
+    sql.push_str(&format!(" ORDER BY {order} DESC"));
     if f.limit > 0 {
         sql.push_str(&format!(" LIMIT {}", f.limit));
     }
@@ -258,7 +263,7 @@ pub fn query_picks(conn: &Connection, f: &PickFilter) -> Result<Vec<PickRow>, St
                 base_model: r.get::<_, Option<String>>(4)?.unwrap_or_default(),
                 nsfw: r.get::<_, i64>(5)? != 0,
                 downloads: r.get::<_, Option<i64>>(6)?.unwrap_or(0),
-                rating: r.get::<_, Option<f64>>(7)?.unwrap_or(0.0),
+                thumbs_up: r.get::<_, Option<i64>>(7)?.unwrap_or(0),
                 size_kb: r.get::<_, Option<f64>>(8)?.unwrap_or(0.0),
                 trained_words: r.get::<_, Option<String>>(9)?.unwrap_or_default(),
                 status: r.get::<_, Option<String>>(10)?.unwrap_or_else(|| "indexed".into()),
@@ -316,6 +321,34 @@ pub fn query_manifest(conn: &Connection) -> Result<Vec<ManifestRow>, String> {
         })
         .map_err(|e| e.to_string())?;
     rows.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())
+}
+
+/// Distinct model ids that have at least one downloaded/promoted file.
+pub fn downloaded_model_ids(conn: &Connection) -> Vec<i64> {
+    let mut out = Vec::new();
+    if let Ok(mut stmt) = conn.prepare(
+        "SELECT DISTINCT v.model_id FROM files f
+         JOIN versions v ON v.version_id=f.version_id
+         WHERE f.status IN ('downloaded','promoted')",
+    ) {
+        if let Ok(rows) = stmt.query_map([], |r| r.get::<_, i64>(0)) {
+            out = rows.filter_map(|r| r.ok()).collect();
+        }
+    }
+    out
+}
+
+/// Adopt a file identified by hash: point it at `path` and mark it downloaded.
+/// Returns true if a catalog row with that hash existed.
+pub fn adopt_by_hash(conn: &Connection, sha256: &str, path: &str) -> bool {
+    conn.execute(
+        "UPDATE files SET local_path=?1,
+            status=CASE WHEN status='promoted' THEN 'promoted' ELSE 'downloaded' END
+         WHERE sha256=?2 COLLATE NOCASE",
+        params![path, sha256],
+    )
+    .map(|n| n > 0)
+    .unwrap_or(false)
 }
 
 pub fn file_row(conn: &Connection, file_id: i64) -> Option<ManifestRow> {
@@ -452,18 +485,28 @@ pub fn audit(conn: &Connection, vault_root: &str) -> Result<AuditReport, String>
             }
         }
     }
-    // orphan scan: model files in the vault subdirs not referenced by the manifest
-    for sub in ["checkpoints", "loras", "embeddings", "controlnet", "vae", "upscale_models"] {
-        let dir = Path::new(vault_root).join(sub);
-        if let Ok(entries) = std::fs::read_dir(&dir) {
-            for e in entries.flatten() {
-                let p = e.path();
-                if p.is_file() {
-                    let ext = p.extension().and_then(|x| x.to_str()).unwrap_or("");
-                    if matches!(ext, "safetensors" | "ckpt" | "pt" | "bin" | "pth")
-                        && !known.contains(&p)
-                    {
-                        rep.orphans.push(p.to_string_lossy().into_owned());
+    // orphan scan: model files anywhere under the vault (one level of subdirs)
+    // not referenced by the manifest. Scans every subfolder so pre-existing
+    // libraries (e.g. flux/) are caught, skipping the .civitai metadata dir.
+    if let Ok(top) = std::fs::read_dir(vault_root) {
+        for sub in top.flatten() {
+            let dir = sub.path();
+            if !dir.is_dir() {
+                continue;
+            }
+            if dir.file_name().and_then(|n| n.to_str()) == Some(".civitai") {
+                continue;
+            }
+            if let Ok(entries) = std::fs::read_dir(&dir) {
+                for e in entries.flatten() {
+                    let p = e.path();
+                    if p.is_file() {
+                        let ext = p.extension().and_then(|x| x.to_str()).unwrap_or("");
+                        if matches!(ext, "safetensors" | "ckpt" | "pt" | "bin" | "pth" | "gguf" | "sft")
+                            && !known.contains(&p)
+                        {
+                            rep.orphans.push(p.to_string_lossy().into_owned());
+                        }
                     }
                 }
             }
@@ -472,10 +515,21 @@ pub fn audit(conn: &Connection, vault_root: &str) -> Result<AuditReport, String>
     Ok(rep)
 }
 
-/// Heal the safe cases: reset manifest rows whose files vanished so they can be
-/// re-fetched. Returns count reset. (Orphans are reported, never auto-deleted.)
-pub fn heal(conn: &Connection, rep: &AuditReport) -> usize {
-    let mut n = 0;
+/// Outcome of a heal pass.
+#[derive(Clone, Default)]
+pub struct HealReport {
+    pub reset: usize,    // rows whose vanished file was reset for re-fetch
+    pub adopted: usize,  // orphan files on disk matched into the manifest
+    pub unmatched: usize, // orphans with no catalog match (still orphans)
+}
+
+/// Reconcile the manifest with disk:
+/// - reset rows whose vault/NVMe file vanished (so they can be re-fetched);
+/// - ADOPT orphans: match each loose file on disk to a catalog entry by filename
+///   and register it as downloaded, so a pre-existing library becomes tracked.
+///   (Filename match — not hash-verified. Orphans with no catalog row are left.)
+pub fn heal(conn: &Connection, rep: &AuditReport) -> HealReport {
+    let mut out = HealReport::default();
     for (fid, _) in &rep.missing_vault {
         let _ = conn.execute(
             "UPDATE files SET status='indexed', local_path=NULL, nvme_path=NULL
@@ -483,7 +537,7 @@ pub fn heal(conn: &Connection, rep: &AuditReport) -> usize {
             [fid],
         );
         log(conn, *fid, 0, "heal", "vault file missing -> reset to indexed");
-        n += 1;
+        out.reset += 1;
     }
     for (fid, _) in &rep.missing_nvme {
         let _ = conn.execute(
@@ -491,9 +545,37 @@ pub fn heal(conn: &Connection, rep: &AuditReport) -> usize {
             [fid],
         );
         log(conn, *fid, 0, "heal", "nvme replica missing -> demote to downloaded");
-        n += 1;
+        out.reset += 1;
     }
-    n
+    for orphan in &rep.orphans {
+        let fname = match Path::new(orphan).file_name().and_then(|f| f.to_str()) {
+            Some(f) => f,
+            None => continue,
+        };
+        // match a catalog file of this name that isn't already located
+        let fid: Option<i64> = conn
+            .query_row(
+                "SELECT file_id FROM files WHERE name=?1
+                 ORDER BY (local_path IS NULL) DESC LIMIT 1",
+                [fname],
+                |r| r.get(0),
+            )
+            .ok();
+        match fid {
+            Some(fid) => {
+                let _ = conn.execute(
+                    "UPDATE files SET local_path=?1,
+                        status=CASE WHEN status='promoted' THEN 'promoted' ELSE 'downloaded' END
+                     WHERE file_id=?2",
+                    params![orphan, fid],
+                );
+                log(conn, fid, 0, "adopt", orphan);
+                out.adopted += 1;
+            }
+            None => out.unmatched += 1,
+        }
+    }
+    out
 }
 
 #[cfg(test)]

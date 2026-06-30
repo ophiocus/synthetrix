@@ -9,6 +9,20 @@ app's runtime version is derived from the latest `v*` git tag (`app/build.rs` �
 
 ## [Unreleased]
 
+### Added
+- **Manifest silverbox (full-size image overlay).** Clicking any captured image in
+  the Manifest strip opens a resizable full-size overlay.
+- **ⓘ info button** on each captured image — replaces the old WF / A1 click badges.
+  Opens the silverbox's "Workflow + Params" view (node graph beside the A1111 text)
+  and, if exactly one side is present, **synthesizes the missing side and caches it**
+  next to the image (`{stem}.workflow.json` / `{stem}.params.txt`).
+- **`convert.rs`** — bidirectional ComfyUI-graph ⇄ A1111-params conversion
+  (handles UI and API workflow formats; A1111 sampler→Comfy sampler+scheduler map).
+- **`ingest_provisioned.py`** — registers provisioner/HuggingFace models into the
+  manifest as tracked rows (HF-namespaced negative ids, `status=promoted`, vault
+  `local_path` + NVMe `nvme_path`, sha256). Closes the gap where the CivitAI-bound
+  recover/heal/audit can't adopt a HF model (e.g. WAN 2.2 via AIProd `provision.py`).
+
 ## [0.1.0] - 2026-06-28
 
 ### Added

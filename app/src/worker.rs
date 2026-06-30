@@ -6,8 +6,12 @@ use crate::config::Config;
 use crate::{db, pngmeta};
 use eframe::egui;
 use serde_json::Value;
+use sha2::{Digest, Sha256};
+use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{Receiver, Sender};
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 pub enum Cmd {
     Reconfigure(Config),
@@ -20,6 +24,10 @@ pub enum Cmd {
     Lock(i64, bool),
     Audit,
     Heal(db::AuditReport),
+    /// Harvest example images + workflows for every tracked model.
+    HarvestImages,
+    /// Identify orphan files by hash via CivitAI, import + adopt what's found.
+    RecoverOrphans(Vec<String>),
 }
 
 pub enum Event {
@@ -31,20 +39,123 @@ pub enum Event {
     Picks(Vec<db::PickRow>),
     Manifest(Vec<db::ManifestRow>),
     Audit(db::AuditReport),
+    /// A cover landed on disk: (model_id, local_path).
+    CoverReady(i64, String),
+    CoverFailed(i64),
     Error(String),
 }
 
 pub struct Worker {
     pub tx: Sender<Cmd>,
     pub rx: Receiver<Event>,
+    pub evt_tx: Sender<Event>, // shared so side pools (covers) can report back
 }
 
 impl Worker {
     pub fn spawn(cfg: Config, ctx: egui::Context) -> Self {
         let (cmd_tx, cmd_rx) = std::sync::mpsc::channel::<Cmd>();
         let (evt_tx, evt_rx) = std::sync::mpsc::channel::<Event>();
-        std::thread::spawn(move || run(cfg, ctx, cmd_rx, evt_tx));
-        Worker { tx: cmd_tx, rx: evt_rx }
+        let evt_for_thread = evt_tx.clone();
+        std::thread::spawn(move || run(cfg, ctx, cmd_rx, evt_for_thread));
+        Worker { tx: cmd_tx, rx: evt_rx, evt_tx }
+    }
+}
+
+/// One cover to fetch into the on-disk cache.
+pub struct CoverReq {
+    pub model_id: i64,
+    pub url: String,
+}
+
+/// A small pool of threads that fill the cover cache in parallel — independent
+/// of the main worker, so covers load fast and never queue behind big downloads.
+pub struct CoverFetcher {
+    pub tx: Sender<CoverReq>,
+}
+
+impl CoverFetcher {
+    pub fn spawn(cfg: &Config, ctx: egui::Context, evt_tx: Sender<Event>, threads: usize) -> Self {
+        let (tx, rx) = std::sync::mpsc::channel::<CoverReq>();
+        let rx = Arc::new(Mutex::new(rx));
+        let dir = cfg.covers_dir();
+        let token = cfg.effective_token();
+        let client = reqwest::blocking::Client::builder()
+            .user_agent("synthetrix-harvester/1.0")
+            .timeout(Duration::from_secs(60))
+            .build()
+            .expect("cover client");
+        for _ in 0..threads.max(1) {
+            let rx = rx.clone();
+            let evt = evt_tx.clone();
+            let ctx = ctx.clone();
+            let dir = dir.clone();
+            let client = client.clone();
+            let token = token.clone();
+            std::thread::spawn(move || loop {
+                let req = {
+                    let guard = match rx.lock() {
+                        Ok(g) => g,
+                        Err(_) => break,
+                    };
+                    guard.recv()
+                };
+                let req = match req {
+                    Ok(r) => r,
+                    Err(_) => break, // channel closed
+                };
+                let mid = req.model_id;
+                // disk cache hit?
+                let mut path = None;
+                for ext in ["jpg", "png", "webp"] {
+                    let p = dir.join(format!("{mid}.{ext}"));
+                    if p.exists() {
+                        path = Some(p);
+                        break;
+                    }
+                }
+                if path.is_none() {
+                    let url = req.url.replace("width=256", "width=384");
+                    let mut rb = client.get(&url);
+                    if let Some(t) = &token {
+                        rb = rb.bearer_auth(t);
+                    }
+                    match rb.send().and_then(|r| r.error_for_status()) {
+                        Ok(resp) => {
+                            let ct = resp
+                                .headers()
+                                .get(reqwest::header::CONTENT_TYPE)
+                                .and_then(|h| h.to_str().ok())
+                                .unwrap_or("")
+                                .split(';')
+                                .next()
+                                .unwrap_or("")
+                                .to_string();
+                            match resp.bytes() {
+                                Ok(bytes) => {
+                                    let _ = std::fs::create_dir_all(&dir);
+                                    let p = dir.join(format!("{mid}.{}", ext_for(&ct)));
+                                    if std::fs::write(&p, &bytes).is_ok() {
+                                        path = Some(p);
+                                    }
+                                }
+                                Err(_) => {}
+                            }
+                        }
+                        Err(_) => {}
+                    }
+                }
+                match path {
+                    Some(p) => {
+                        let _ = evt.send(Event::CoverReady(mid, p.to_string_lossy().into_owned()));
+                    }
+                    None => {
+                        let _ = evt.send(Event::CoverFailed(mid));
+                    }
+                }
+                ctx.request_repaint();
+            });
+        }
+        CoverFetcher { tx }
     }
 }
 
@@ -121,11 +232,16 @@ fn handle(st: &mut State, cmd: Cmd) {
             st.status(if v { "locked" } else { "unlocked" });
             refresh_manifest(st);
         }
+        Cmd::HarvestImages => harvest_all(st),
+        Cmd::RecoverOrphans(paths) => recover_orphans(st, paths),
         Cmd::Audit => audit(st),
         Cmd::Heal(rep) => {
             if let Some(conn) = &st.conn {
-                let n = db::heal(conn, &rep);
-                st.status(format!("healed {n} manifest rows"));
+                let h = db::heal(conn, &rep);
+                st.status(format!(
+                    "heal: adopted {} orphan(s), reset {}, {} unmatched (not in catalog)",
+                    h.adopted, h.reset, h.unmatched
+                ));
             }
             refresh_manifest(st);
         }
@@ -382,6 +498,121 @@ fn audit(st: &mut State) {
     st.emit(Event::Busy(false));
 }
 
+/// Capture example images + workflows for every tracked model (used after a heal
+/// adopts files that never went through the download path).
+fn harvest_all(st: &mut State) {
+    let ids = match &st.conn {
+        Some(c) => db::downloaded_model_ids(c),
+        None => return,
+    };
+    if ids.is_empty() {
+        st.status("no tracked models to capture images for");
+        return;
+    }
+    st.emit(Event::Busy(true));
+    let total = ids.len();
+    let per = st.cfg.per_model;
+    let mut saved = 0usize;
+    let mut wf = 0usize;
+    for (i, mid) in ids.iter().enumerate() {
+        st.status(format!("capturing images {}/{} (model {})", i + 1, total, mid));
+        let (s, w) = harvest_images(st, *mid, per, false);
+        saved += s;
+        wf += w;
+        st.emit(Event::Progress(i + 1, total, saved, wf));
+    }
+    st.emit(Event::Busy(false));
+    st.emit(Event::Log(format!(
+        "── captured {saved} images ({wf} workflows) across {total} models ──"
+    )));
+    st.status(format!("captured {saved} images ({wf} workflows)"));
+}
+
+fn sha256_file(path: &Path) -> Result<String, String> {
+    let mut f = std::fs::File::open(path).map_err(|e| e.to_string())?;
+    let mut hasher = Sha256::new();
+    let mut buf = [0u8; 1 << 20];
+    loop {
+        let n = f.read(&mut buf).map_err(|e| e.to_string())?;
+        if n == 0 {
+            break;
+        }
+        hasher.update(&buf[..n]);
+    }
+    Ok(format!("{:x}", hasher.finalize()))
+}
+
+/// Identify orphan files by SHA256 via CivitAI's by-hash endpoint, import the
+/// model into the catalog, and adopt the file by exact hash match.
+fn recover_orphans(st: &mut State, paths: Vec<String>) {
+    if st.conn.is_none() {
+        return;
+    }
+    st.emit(Event::Busy(true));
+    let total = paths.len();
+    let (mut recovered, mut notfound, mut errors) = (0usize, 0usize, 0usize);
+    for (i, path) in paths.iter().enumerate() {
+        let name = Path::new(path)
+            .file_name()
+            .and_then(|f| f.to_str())
+            .unwrap_or(path)
+            .to_string();
+        st.status(format!("hashing {}/{}: {}", i + 1, total, name));
+        let hash = match sha256_file(Path::new(path)) {
+            Ok(h) => h,
+            Err(e) => {
+                st.emit(Event::Log(format!("✘ hash {name}: {e}")));
+                errors += 1;
+                continue;
+            }
+        };
+        match st.client.model_version_by_hash(&hash) {
+            Ok(Some(ver)) => {
+                let mid = ver.get("modelId").and_then(|x| x.as_i64());
+                match mid {
+                    Some(mid) => match st.client.model_by_id(mid) {
+                        Ok(model) => {
+                            if let Some(c) = &st.conn {
+                                let _ = db::upsert_model(c, &model);
+                                db::adopt_by_hash(c, &hash, path);
+                                db::log(c, 0, mid, "recover", path);
+                            }
+                            st.emit(Event::Log(format!("✔ recovered {name} → model {mid}")));
+                            recovered += 1;
+                        }
+                        Err(e) => {
+                            st.emit(Event::Log(format!("✘ model {mid}: {e}")));
+                            errors += 1;
+                        }
+                    },
+                    None => {
+                        st.emit(Event::Log(format!("? {name}: match without modelId")));
+                        notfound += 1;
+                    }
+                }
+            }
+            Ok(None) => {
+                st.emit(Event::Log(format!("– not on CivitAI: {name}")));
+                notfound += 1;
+            }
+            Err(e) => {
+                st.emit(Event::Log(format!("✘ lookup {name}: {e}")));
+                errors += 1;
+            }
+        }
+        st.emit(Event::Progress(i + 1, total, recovered, notfound));
+    }
+    st.emit(Event::Busy(false));
+    st.emit(Event::Log(format!(
+        "── recover: {recovered} adopted, {notfound} not on CivitAI, {errors} errors ──"
+    )));
+    st.status(format!(
+        "recover: {recovered} adopted, {notfound} not found, {errors} errors"
+    ));
+    refresh_manifest(st);
+}
+
+
 // ---- example image harvest (shared by sync starter + download full) --------
 
 fn ext_for(ct: &str) -> &'static str {
@@ -394,9 +625,10 @@ fn ext_for(ct: &str) -> &'static str {
     }
 }
 
-fn harvest_images(st: &mut State, model_id: i64, per: u32, starter: bool) {
+/// Returns (images_saved, workflows_extracted).
+fn harvest_images(st: &mut State, model_id: i64, per: u32, starter: bool) -> (usize, usize) {
     let Some(raw) = st.conn.as_ref().and_then(|c| db::model_raw(c, model_id)) else {
-        return;
+        return (0, 0);
     };
     let imgs: Vec<Value> = raw
         .get("modelVersions")
@@ -419,6 +651,8 @@ fn harvest_images(st: &mut State, model_id: i64, per: u32, starter: bool) {
 
     let gallery_root = PathBuf::from(&st.cfg.gallery_root);
     let include_video = st.cfg.include_video;
+    let mut saved = 0usize;
+    let mut workflows = 0usize;
     for im in take {
         let img_id = im.get("id").and_then(|x| x.as_i64()).unwrap_or(0);
         if img_id == 0 {
@@ -461,6 +695,7 @@ fn harvest_images(st: &mut State, model_id: i64, per: u32, starter: bool) {
                 let _ = std::fs::write(&p, w);
                 wf_path = Some(p.to_string_lossy().into_owned());
                 has_wf = true;
+                workflows += 1;
             }
             if let Some(pr) = params {
                 let p = mdir.join(format!("{img_id}.params.txt"));
@@ -478,5 +713,7 @@ fn harvest_images(st: &mut State, model_id: i64, per: u32, starter: bool) {
                 wf_path.as_deref(), params_path.as_deref(), has_wf, starter,
             );
         }
+        saved += 1;
     }
+    (saved, workflows)
 }

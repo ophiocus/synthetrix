@@ -58,11 +58,16 @@ def download(cfg, conn, token, file_id: int) -> Path | None:
         print(f"  = {dest.name} already in vault"); return Path(row["local_path"])
 
     url = row["download_url"]
+    if token:
+        sep = "&" if "?" in url else "?"
+        url = f"{url}{sep}token={token}"  # survives CivitAI's S3 redirect (headers stripped)
     headers = {"Authorization": f"Bearer {token}"} if token else {}
     print(f"  v {row['model_name']} -> {dest}")
     tmp = dest.with_suffix(dest.suffix + ".part")
     with requests.get(url, headers=headers, stream=True, timeout=120) as r:
         r.raise_for_status()
+        if "text/html" in r.headers.get("Content-Type", ""):
+            raise RuntimeError("got HTML (auth/redirect failure), not a model file")
         total = int(r.headers.get("Content-Length", 0))
         done = 0
         with open(tmp, "wb") as fh:
