@@ -14,8 +14,11 @@ app's runtime version is derived from the latest `v*` git tag (`app/build.rs` �
   substituting a compatible one. Order: keep it if installed → match an installed
   file under a near-identical name (camelCase/digit-aware token overlap, e.g.
   `2758_hinaAsianFlux1-krea-dev…` → installed `2758FluxAsianUtopian…`) → **hotload
-  the model from the H:\Models vault** (promote to the NVMe tier) and rewrite the
-  reference to the real filename. Only when the model is genuinely absent does it
+  the model from the H:\Models vault** and rewrite the reference to the real
+  filename. The vault search spans `checkpoints`/`diffusion_models`/`unet` (model
+  files are often mis-filed) and hotloads into the subdir the *loader* reads from
+  (a `UNETLoader` / "Load Diffusion Model" → `diffusion_models`, even if the file
+  sat under `checkpoints`). Only when the model is genuinely absent does it
   leave ComfyUI's honest "missing model" (no silent swap to a wrong checkpoint).
   The bridge calls `refreshComboInNodes` so a just-hotloaded model validates.
 

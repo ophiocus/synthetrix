@@ -211,16 +211,23 @@ fn best_match(wanted: &str, candidates: &[String]) -> Option<String> {
     best.map(|(_, c)| c.clone())
 }
 
-/// (object_info node, input field, vault/NVMe subdirs) for a loader class.
-fn loader_info(class_type: &str) -> Option<(&'static str, &'static str, &'static [&'static str])> {
+/// (object_info node, input field, canonical NVMe subdir to hotload into) for a
+/// loader class. A model is hotloaded into the subdir its *loader* expects, even
+/// if the vault filed it elsewhere (e.g. a Flux "noclip" diffusion model the vault
+/// put under checkpoints still belongs in diffusion_models for a UNETLoader).
+fn loader_info(class_type: &str) -> Option<(&'static str, &'static str, &'static str)> {
     if class_type.contains("CheckpointLoader") {
-        Some(("CheckpointLoaderSimple", "ckpt_name", &["checkpoints"]))
+        Some(("CheckpointLoaderSimple", "ckpt_name", "checkpoints"))
     } else if class_type == "UNETLoader" {
-        Some(("UNETLoader", "unet_name", &["diffusion_models", "unet"]))
+        Some(("UNETLoader", "unet_name", "diffusion_models"))
     } else {
         None
     }
 }
+
+/// Vault subdirs to search for a big model file, regardless of loader type — model
+/// files are routinely mis-categorized across these.
+const VAULT_SEARCH_DIRS: &[&str] = &["checkpoints", "diffusion_models", "unet"];
 
 /// Resolve `wanted` to a model ComfyUI can load. Returns Some(new_name) when the
 /// reference should change, None to keep it as-is. Order: keep if installed →
@@ -231,7 +238,7 @@ fn resolve_model(
     wanted: &str,
     node: &str,
     field: &str,
-    subdirs: &[&str],
+    target_subdir: &str,
     vault_root: &str,
     nvme_root: &str,
 ) -> Option<String> {
@@ -242,7 +249,9 @@ fn resolve_model(
     if let Some(m) = best_match(wanted, &installed) {
         return Some(m);
     }
-    for sub in subdirs {
+    // search the cold vault broadly (the file may be mis-filed), then hotload the
+    // match into the subdir this loader actually reads from.
+    for sub in VAULT_SEARCH_DIRS {
         let dir = Path::new(vault_root).join(sub);
         let rd = match std::fs::read_dir(&dir) {
             Ok(r) => r,
@@ -262,7 +271,7 @@ fn resolve_model(
             .collect();
         if let Some(fname) = best_match(wanted, &names) {
             let src = dir.join(&fname);
-            let dst_dir = Path::new(nvme_root).join(sub);
+            let dst_dir = Path::new(nvme_root).join(target_subdir);
             let _ = std::fs::create_dir_all(&dst_dir);
             let dst = dst_dir.join(&fname);
             if dst.exists() || std::fs::copy(&src, &dst).is_ok() {
@@ -295,7 +304,7 @@ fn patch_model_names(
                     .and_then(|t| t.as_str())
                     .unwrap_or("")
                     .to_string();
-                let Some((node, field, subdirs)) = loader_info(&t) else {
+                let Some((node, field, target)) = loader_info(&t) else {
                     continue;
                 };
                 if let Some(first) = n
@@ -305,7 +314,7 @@ fn patch_model_names(
                 {
                     if let Some(cur) = first.as_str().map(String::from) {
                         if let Some(rep) =
-                            resolve_model(client, &cur, node, field, subdirs, vault_root, nvme_root)
+                            resolve_model(client, &cur, node, field, target, vault_root, nvme_root)
                         {
                             *first = serde_json::Value::String(rep);
                         }
@@ -320,13 +329,13 @@ fn patch_model_names(
                 .and_then(|c| c.as_str())
                 .unwrap_or("")
                 .to_string();
-            let Some((node, field, subdirs)) = loader_info(&t) else {
+            let Some((node, field, target)) = loader_info(&t) else {
                 continue;
             };
             if let Some(inp) = n.get_mut("inputs").and_then(|i| i.as_object_mut()) {
                 if let Some(cur) = inp.get(field).and_then(|x| x.as_str()).map(String::from) {
                     if let Some(rep) =
-                        resolve_model(client, &cur, node, field, subdirs, vault_root, nvme_root)
+                        resolve_model(client, &cur, node, field, target, vault_root, nvme_root)
                     {
                         inp.insert(field.to_string(), serde_json::Value::String(rep));
                     }
