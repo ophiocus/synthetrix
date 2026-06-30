@@ -163,10 +163,11 @@ pub struct SynthetrixApp {
     /// Full-size image + workflow/params overlay (the "silverbox").
     pub lightbox: Option<Lightbox>,
 
-    // Self-update plumbing (inherited from the skeleton).
+    // Self-update plumbing (TinyBooth-style: periodic re-check + clean close).
     pub update_state: UpdateState,
     pub update_error: Option<String>,
     pub update_rx: Option<mpsc::Receiver<Option<crate::git_update::UpdateAvailable>>>,
+    pub last_update_check: Option<std::time::Instant>,
 }
 
 impl SynthetrixApp {
@@ -213,6 +214,7 @@ impl SynthetrixApp {
             update_state: UpdateState::Checking,
             update_error: None,
             update_rx: Some(rx),
+            last_update_check: Some(std::time::Instant::now()),
         }
     }
 
@@ -294,6 +296,20 @@ impl eframe::App for SynthetrixApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.pump_events();
 
+        // Periodic background re-check so a freshly-published release surfaces
+        // mid-session, not only at startup. Wake the loop when idle so the timer
+        // fires without requiring user interaction.
+        if let Some(r) = crate::git_update::maybe_spawn_recheck(
+            &self.update_state,
+            &self.update_rx,
+            self.last_update_check,
+            false,
+        ) {
+            self.update_rx = Some(r);
+            self.last_update_check = Some(std::time::Instant::now());
+        }
+        ctx.request_repaint_after(crate::git_update::RECHECK_INTERVAL);
+
         egui::TopBottomPanel::top("top_bar").show(ctx, |ui| {
             egui::menu::bar(ui, |ui| {
                 ui.heading("Synthetrix");
@@ -310,9 +326,10 @@ impl eframe::App for SynthetrixApp {
             });
         });
 
+        let mut should_close = false;
         egui::TopBottomPanel::bottom("bottom_bar").show(ctx, |ui| {
             ui.horizontal(|ui| {
-                crate::git_update::render(
+                should_close = crate::git_update::render(
                     ui,
                     &mut self.update_state,
                     &mut self.update_error,
@@ -324,6 +341,11 @@ impl eframe::App for SynthetrixApp {
                 }
             });
         });
+        // Installer launched — close cleanly so Drop/config-save run before the
+        // MSI swaps the running exe.
+        if should_close {
+            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+        }
 
         egui::CentralPanel::default().show(ctx, |ui| match self.tab {
             Tab::Fetcher => crate::tabs::fetcher(self, ui),

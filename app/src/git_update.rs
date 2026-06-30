@@ -1,12 +1,24 @@
 //! Self-update via GitHub releases.
 //!
 //! Checks the latest release of `APP_GH_REPO`, compares 4-part semver against
-//! `APP_VERSION` (set by build.rs from git tag), and, if newer, downloads the
+//! `APP_VERSION` (set by build.rs from the git tag), and, if newer, downloads the
 //! first `.msi` asset and launches it elevated through PowerShell.
+//!
+//! On a successful installer launch, [`render`] returns `true` so the caller can
+//! close the eframe window cleanly (Drops run, config saves) instead of a raw
+//! `process::exit` — mirrors the TinyBooth updater.
 
 use eframe::egui;
 use std::path::PathBuf;
 use std::sync::mpsc;
+use std::time::{Duration, Instant};
+
+/// Minimum gap between background re-checks of the GitHub releases endpoint.
+/// 5 min matches the CI build/publish window — by the time it elapses, a tag
+/// pushed when the app opened should have produced an MSI on `releases/latest`.
+/// Without this the version label could stay stale for the whole session
+/// (the check otherwise fires only once at startup).
+pub const RECHECK_INTERVAL: Duration = Duration::from_secs(300);
 
 #[derive(Debug, Clone)]
 pub struct UpdateAvailable {
@@ -33,11 +45,39 @@ fn is_newer(latest: &str, current: &str) -> bool {
     parse(latest) > parse(current)
 }
 
+/// Fire a background `check_latest_release()` thread iff the updater is idle
+/// (state Idle, no in-flight rx) and either `force_now` is set or the last check
+/// is older than [`RECHECK_INTERVAL`] (or never ran). Caller sets
+/// `last_check_at = Some(Instant::now())` when this returns `Some`.
+pub fn maybe_spawn_recheck(
+    state: &UpdateState,
+    rx: &Option<mpsc::Receiver<Option<UpdateAvailable>>>,
+    last_check_at: Option<Instant>,
+    force_now: bool,
+) -> Option<mpsc::Receiver<Option<UpdateAvailable>>> {
+    if !matches!(state, UpdateState::Idle) || rx.is_some() {
+        return None;
+    }
+    let should_run = force_now
+        || match last_check_at {
+            None => true,
+            Some(t) => t.elapsed() >= RECHECK_INTERVAL,
+        };
+    if !should_run {
+        return None;
+    }
+    let (tx, r) = mpsc::channel();
+    std::thread::spawn(move || {
+        let _ = tx.send(check_latest_release());
+    });
+    Some(r)
+}
+
 pub fn check_latest_release() -> Option<UpdateAvailable> {
     let ua = format!("{}/{}", crate::APP_NAME, env!("APP_VERSION"));
     let client = reqwest::blocking::Client::builder()
         .user_agent(ua)
-        .timeout(std::time::Duration::from_secs(10))
+        .timeout(Duration::from_secs(10))
         .build()
         .ok()?;
     let url = format!(
@@ -68,7 +108,7 @@ fn download_and_install(url: &str, version: &str) -> Result<PathBuf, String> {
     let ua = format!("{}/{}", crate::APP_NAME, env!("APP_VERSION"));
     let client = reqwest::blocking::Client::builder()
         .user_agent(ua)
-        .timeout(std::time::Duration::from_secs(180))
+        .timeout(Duration::from_secs(180))
         .build()
         .map_err(|e| format!("HTTP client: {e}"))?;
     let bytes = client
@@ -96,12 +136,18 @@ fn download_and_install(url: &str, version: &str) -> Result<PathBuf, String> {
     Ok(path)
 }
 
+/// Drive the version-label widget. Returns `true` exactly once, in the frame
+/// where an installer launch has succeeded — the caller should respond by closing
+/// the eframe window so Drop impls (config save) run cleanly.
+#[must_use = "the bool means the app should close so Drop/config-save run before the installer swaps the exe"]
 pub fn render(
     ui: &mut egui::Ui,
     state: &mut UpdateState,
     error: &mut Option<String>,
     rx: &mut Option<mpsc::Receiver<Option<UpdateAvailable>>>,
-) {
+) -> bool {
+    let mut should_close = false;
+
     // Drain background check result.
     if let Some(r) = rx.as_ref() {
         if let Ok(result) = r.try_recv() {
@@ -112,13 +158,13 @@ pub fn render(
             *rx = None;
         }
     }
-    // Drain download result.
+    // Drain download result. On Ok, signal a clean close; on Err, surface it.
     if let UpdateState::Downloading(r) = state {
         if let Ok(res) = r.try_recv() {
             match res {
-                Ok(_) => std::process::exit(0),
+                Ok(_) => should_close = true,
                 Err(e) => {
-                    *error = Some(e);
+                    *error = Some(format!("Update failed: {e}"));
                     *state = UpdateState::Idle;
                 }
             }
@@ -126,8 +172,14 @@ pub fn render(
     }
 
     let label = format!("v{}", env!("APP_VERSION"));
-    let response = ui.add(egui::Label::new(label).sense(egui::Sense::click()));
-    if response.clicked() && matches!(state, UpdateState::Idle) {
+    let response = ui
+        .add(egui::Label::new(label).sense(egui::Sense::click()))
+        .on_hover_text("Installed version. Click to re-check GitHub for a newer release.");
+
+    // A click always forces a fresh round trip (even when an update is already
+    // known); skip only while a check/download is mid-flight.
+    let allow_recheck = !matches!(state, UpdateState::Checking | UpdateState::Downloading(_));
+    if response.clicked() && allow_recheck {
         *state = UpdateState::Checking;
         let (tx, r) = mpsc::channel();
         std::thread::spawn(move || {
@@ -160,5 +212,35 @@ pub fn render(
         UpdateState::Downloading(_) => {
             ui.label("downloading…");
         }
+    }
+
+    should_close
+}
+
+#[cfg(test)]
+mod tests {
+    use super::is_newer;
+
+    #[test]
+    fn three_part_basic() {
+        assert!(is_newer("0.1.1", "0.1.0"));
+        assert!(is_newer("0.2.0", "0.1.99"));
+        assert!(!is_newer("0.1.0", "0.1.0"));
+        assert!(!is_newer("0.1.0", "0.1.1"));
+    }
+
+    #[test]
+    fn four_part_subtag() {
+        assert!(is_newer("0.1.0.1", "0.1.0"));
+        assert!(is_newer("0.1.0.10", "0.1.0.9"));
+        assert!(!is_newer("0.1.0.0", "0.1.0"));
+    }
+
+    #[test]
+    fn malformed_and_empty_default_to_zero() {
+        assert!(!is_newer("garbage", "0.0.1"));
+        assert!(is_newer("0.0.1", "garbage"));
+        assert!(!is_newer("", "0.0.1"));
+        assert!(is_newer("0.0.1", ""));
     }
 }
