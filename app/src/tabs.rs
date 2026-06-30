@@ -826,6 +826,9 @@ pub fn manifest(app: &mut SynthetrixApp, ui: &mut egui::Ui) {
     }
 
     // --- the silverbox: full-size image + workflow/params, one overlay ---
+    // grabbed before the &mut app.lightbox borrow below (config is on app too)
+    let comfy_vault = app.config.vault_root.clone();
+    let comfy_nvme = app.config.nvme_root.clone();
     let mut close_lb = false;
     if let Some(lb) = app.lightbox.as_mut() {
         let fname = std::path::Path::new(&lb.image_path)
@@ -860,8 +863,12 @@ pub fn manifest(app: &mut SynthetrixApp, ui: &mut egui::Ui) {
                             .wf_path
                             .clone()
                             .and_then(|p| std::fs::read_to_string(p).ok());
+                        let vault = comfy_vault.clone();
+                        let nvme = comfy_nvme.clone();
                         std::thread::spawn(move || {
-                            if let Err(e) = crate::comfy::open_in_comfy(&img, wf.as_deref()) {
+                            if let Err(e) =
+                                crate::comfy::open_in_comfy(&img, wf.as_deref(), &vault, &nvme)
+                            {
                                 eprintln!("[synthetrix] open in ComfyUI: {e}");
                             }
                         });

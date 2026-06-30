@@ -9,6 +9,16 @@ app's runtime version is derived from the latest `v*` git tag (`app/build.rs` �
 
 ## [Unreleased]
 
+### Changed
+- "Open workflow in ComfyUI" now **resolves the workflow's real model** instead of
+  substituting a compatible one. Order: keep it if installed → match an installed
+  file under a near-identical name (camelCase/digit-aware token overlap, e.g.
+  `2758_hinaAsianFlux1-krea-dev…` → installed `2758FluxAsianUtopian…`) → **hotload
+  the model from the H:\Models vault** (promote to the NVMe tier) and rewrite the
+  reference to the real filename. Only when the model is genuinely absent does it
+  leave ComfyUI's honest "missing model" (no silent swap to a wrong checkpoint).
+  The bridge calls `refreshComboInNodes` so a just-hotloaded model validates.
+
 ## [0.1.2] - 2026-06-30
 
 ### Added

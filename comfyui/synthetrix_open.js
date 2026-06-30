@@ -41,6 +41,10 @@
       const blob = await res.blob();
       const name = params.get("synname") || "synthetrix.png";
       const file = new File([blob], name, { type: blob.type || "image/png" });
+      // pick up any model Synthetrix just hotloaded, so validation resolves it
+      try {
+        if (app.refreshComboInNodes) await app.refreshComboInNodes();
+      } catch (e) {}
       await app.handleFile(file, "synthetrix");
       console.log("[Synthetrix] loaded workflow from", name);
     } catch (e) {
