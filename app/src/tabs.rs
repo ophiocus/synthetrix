@@ -844,6 +844,31 @@ pub fn manifest(app: &mut SynthetrixApp, ui: &mut egui::Ui) {
                 ui.horizontal(|ui| {
                     ui.selectable_value(&mut lb.show_info, false, "🖼 Image");
                     ui.selectable_value(&mut lb.show_info, true, "ⓘ Workflow + Params");
+                    ui.separator();
+                    let has_wf = lb.wf_path.is_some();
+                    if ui
+                        .add_enabled(has_wf, egui::Button::new("Open workflow in ComfyUI"))
+                        .on_hover_text(
+                            "Copy the workflow JSON and open ComfyUI — paste (Ctrl+V) to load it",
+                        )
+                        .on_disabled_hover_text("no workflow for this image")
+                        .clicked()
+                    {
+                        let json = lb
+                            .wf_path
+                            .clone()
+                            .and_then(|p| std::fs::read_to_string(p).ok());
+                        ui.output_mut(|o| {
+                            if let Some(j) = json {
+                                o.copied_text = j;
+                            }
+                            o.open_url =
+                                Some(egui::OpenUrl::new_tab("http://127.0.0.1:8188".to_string()));
+                        });
+                        lb.note = Some(
+                            "Workflow copied — paste (Ctrl+V) into ComfyUI to load it.".into(),
+                        );
+                    }
                     if let Some(note) = &lb.note {
                         ui.separator();
                         ui.colored_label(egui::Color32::from_rgb(120, 200, 140), note);

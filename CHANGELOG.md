@@ -9,6 +9,11 @@ app's runtime version is derived from the latest `v*` git tag (`app/build.rs` â†
 
 ## [Unreleased]
 
+### Added
+- **"Open workflow in ComfyUI"** button in the silverbox status bar â€” copies the
+  workflow JSON and opens ComfyUI (`http://127.0.0.1:8188`); paste (Ctrl+V) there
+  to load the graph. Disabled when the image has no workflow.
+
 ## [0.1.1] - 2026-06-29
 
 ### Added
