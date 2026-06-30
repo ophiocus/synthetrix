@@ -85,13 +85,6 @@ fn inflate(data: &[u8]) -> Option<String> {
     d.read_to_string(&mut s).ok().map(|_| s)
 }
 
-/// True if the PNG already carries a ComfyUI `workflow` (UI) or `prompt` (API)
-/// metadata chunk — i.e. dropping it into ComfyUI would load a graph.
-pub fn has_embedded_workflow(data: &[u8]) -> bool {
-    let c = text_chunks(data);
-    c.contains_key("workflow") || c.contains_key("prompt")
-}
-
 /// PNG CRC-32 (IEEE 802.3, reflected) over a chunk's type+data.
 fn crc32(bytes: &[u8]) -> u32 {
     let mut crc: u32 = 0xFFFF_FFFF;
@@ -150,6 +143,44 @@ pub fn insert_text_chunk(data: &[u8], keyword: &str, text: &str) -> Option<Vec<u
     Some(out)
 }
 
+/// Return the PNG with any tEXt/zTXt/iTXt chunks whose keyword is in `keywords`
+/// removed (so a replacement chunk can be inserted without duplicates). Returns
+/// None if `data` isn't a PNG.
+pub fn strip_text_chunks(data: &[u8], keywords: &[&str]) -> Option<Vec<u8>> {
+    if data.len() < 8 || &data[..8] != PNG_SIG {
+        return None;
+    }
+    let mut out = Vec::with_capacity(data.len());
+    out.extend_from_slice(&data[..8]);
+    let mut pos = 8usize;
+    while pos + 8 <= data.len() {
+        let len =
+            u32::from_be_bytes([data[pos], data[pos + 1], data[pos + 2], data[pos + 3]]) as usize;
+        let ctype = &data[pos + 4..pos + 8];
+        let total = match 12usize.checked_add(len) {
+            Some(t) if pos + t <= data.len() => t,
+            _ => break,
+        };
+        let drop = matches!(ctype, b"tEXt" | b"zTXt" | b"iTXt") && {
+            let body = &data[pos + 8..pos + 8 + len];
+            let kw = body
+                .iter()
+                .position(|&b| b == 0)
+                .map(|i| String::from_utf8_lossy(&body[..i]).into_owned())
+                .unwrap_or_default();
+            keywords.iter().any(|k| *k == kw)
+        };
+        if !drop {
+            out.extend_from_slice(&data[pos..pos + total]);
+        }
+        if ctype == b"IEND" {
+            break;
+        }
+        pos += total;
+    }
+    Some(out)
+}
+
 /// (comfy_workflow_json_text, a1111_parameters_text)
 pub fn split_meta(chunks: &HashMap<String, String>) -> (Option<String>, Option<String>) {
     let mut workflow = None;
@@ -177,13 +208,13 @@ mod tests {
         png.extend_from_slice(b"IEND");
         png.extend_from_slice(&[0xAE, 0x42, 0x60, 0x82]); // IEND CRC
 
-        assert!(!has_embedded_workflow(&png));
+        assert!(!text_chunks(&png).contains_key("workflow"));
         let body = "{\"nodes\":[],\"links\":[]}";
         let out = insert_text_chunk(&png, "workflow", body).unwrap();
 
         let chunks = text_chunks(&out);
         assert_eq!(chunks.get("workflow").map(String::as_str), Some(body));
-        assert!(has_embedded_workflow(&out));
+        assert!(chunks.contains_key("workflow"));
         // IEND still last, total grew by the new chunk
         assert_eq!(&out[out.len() - 8..out.len() - 4], b"IEND");
     }

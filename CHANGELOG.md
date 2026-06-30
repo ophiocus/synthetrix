@@ -23,11 +23,14 @@ app's runtime version is derived from the latest `v*` git tag (`app/build.rs` �
   CRC-32, round-trip tested); new `comfy` module (embed → upload → open).
 
 ### Fixed
-- "Open workflow in ComfyUI" opened the graph with an **empty checkpoint widget** —
-  the workflow referenced a model filename ComfyUI doesn't have (synthesized graphs
-  guess it from the A1111 `Model:` field). Now repoints `CheckpointLoaderSimple` /
-  `UNETLoader` to an installed model (queried live from `/object_info`; fuzzy name
-  match, else the first available) before sending.
+- "Open workflow in ComfyUI" opened the graph with a **missing/empty checkpoint** —
+  the workflow referenced a model ComfyUI doesn't have. Now repoints
+  `CheckpointLoaderSimple` / `UNETLoader` to an installed model for **both harvested
+  and synthesized** graphs (the patched workflow is re-embedded into the image,
+  stripping the original chunk so it wins), choosing an **architecture-compatible**
+  match (a Flux graph → an installed Flux model, not SDXL). If nothing compatible is
+  installed it leaves ComfyUI's honest "missing model" rather than loading an
+  incompatible checkpoint.
 
 ## [0.1.1] - 2026-06-29
 

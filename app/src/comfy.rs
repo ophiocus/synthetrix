@@ -28,10 +28,12 @@ fn enc(s: &str) -> String {
     o
 }
 
-/// Decode to PNG if needed, then ensure it carries the workflow. `wf_json` is the
-/// workflow to embed when the image has none (UI format -> `workflow` chunk, API
-/// format -> `prompt` chunk).
-fn ensure_png_with_workflow(bytes: &[u8], wf_json: Option<&str>) -> Result<Vec<u8>, String> {
+/// Produce a PNG carrying exactly `wf` as its workflow. Decodes to PNG if needed,
+/// strips any existing `workflow`/`prompt` chunks, then embeds `wf` (UI graphs ->
+/// `workflow` chunk, API graphs -> `prompt`). Re-embedding (rather than trusting
+/// the original chunk) is what lets the model-patched graph win for *harvested*
+/// images too, not just synthesized ones.
+fn prepare_png(bytes: &[u8], wf: &str) -> Result<Vec<u8>, String> {
     let is_png = bytes.len() > 8 && &bytes[..8] == PNG_SIG;
     let png = if is_png {
         bytes.to_vec()
@@ -42,17 +44,15 @@ fn ensure_png_with_workflow(bytes: &[u8], wf_json: Option<&str>) -> Result<Vec<u
             .map_err(|e| format!("encode png: {e}"))?;
         buf.into_inner()
     };
-    if pngmeta::has_embedded_workflow(&png) {
-        return Ok(png);
-    }
-    let wf = wf_json.ok_or("image has no embedded workflow and none was provided")?;
+    let stripped = pngmeta::strip_text_chunks(&png, &["workflow", "prompt"]).unwrap_or(png);
     // UI graphs have a top-level "nodes" array; API graphs don't.
     let is_ui = serde_json::from_str::<serde_json::Value>(wf)
         .ok()
         .and_then(|v| v.get("nodes").cloned())
         .is_some();
     let keyword = if is_ui { "workflow" } else { "prompt" };
-    pngmeta::insert_text_chunk(&png, keyword, wf).ok_or_else(|| "failed to embed workflow".into())
+    pngmeta::insert_text_chunk(&stripped, keyword, wf)
+        .ok_or_else(|| "failed to embed workflow".into())
 }
 
 /// Open `image_path`'s workflow in the running ComfyUI. Blocking (run off the UI
@@ -64,7 +64,10 @@ pub fn open_in_comfy(image_path: &str, wf_json: Option<&str>) -> Result<(), Stri
     // doesn't open with an empty/invalid checkpoint widget ("fails to show the
     // model"). Best-effort: if ComfyUI doesn't answer, embed the workflow as-is.
     let patched = wf_json.map(|w| patch_model_names(&client, w));
-    let png = ensure_png_with_workflow(&bytes, patched.as_deref())?;
+    let png = match patched.as_deref() {
+        Some(wf) => prepare_png(&bytes, wf)?,
+        None => bytes.clone(),
+    };
 
     let stem = Path::new(image_path)
         .file_stem()
@@ -143,24 +146,37 @@ fn obj_enum(client: &reqwest::blocking::Client, node: &str, field: &str) -> Vec<
         .unwrap_or_default()
 }
 
-/// Pick a replacement model when `current` isn't installed: a fuzzy name match if
-/// one exists, else the first installed model. None = keep current (already valid
-/// or nothing installed to swap in).
+/// Coarse model architecture family, so a missing model is swapped for a
+/// *compatible* installed one (a Flux graph shouldn't get an SDXL checkpoint).
+fn family(name: &str) -> &'static str {
+    let n = name.to_lowercase();
+    if n.contains("flux") {
+        "flux"
+    } else if n.contains("pony") {
+        "pony"
+    } else if n.contains("illustrious") || n.contains("ilxl") {
+        "illustrious"
+    } else if n.contains("sdxl") || n.contains("xl") {
+        "xl"
+    } else if n.contains("hunyuan") {
+        "hunyuan"
+    } else if n.contains("wan") {
+        "wan"
+    } else {
+        "sd"
+    }
+}
+
+/// Pick a replacement when `current` isn't installed. Prefer an exact name match,
+/// then a same-architecture installed model. None = keep current (already valid,
+/// nothing installed, or no compatible swap — leaving ComfyUI's honest "missing
+/// model" rather than silently loading an incompatible checkpoint).
 fn pick_model(current: &str, installed: &[String]) -> Option<String> {
     if installed.is_empty() || installed.iter().any(|m| m == current) {
         return None;
     }
-    let stem = std::path::Path::new(current)
-        .file_stem()
-        .and_then(|s| s.to_str())
-        .unwrap_or(current)
-        .to_lowercase();
-    let hit = installed.iter().find(|m| {
-        let ml = m.to_lowercase();
-        !stem.is_empty()
-            && (ml.contains(&stem) || stem.contains(ml.trim_end_matches(".safetensors")))
-    });
-    Some(hit.cloned().unwrap_or_else(|| installed[0].clone()))
+    let fam = family(current);
+    installed.iter().find(|m| family(m) == fam).cloned()
 }
 
 /// Rewrite CheckpointLoaderSimple/UNETLoader model names in a workflow (UI or API
