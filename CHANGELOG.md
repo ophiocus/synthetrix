@@ -9,7 +9,30 @@ app's runtime version is derived from the latest `v*` git tag (`app/build.rs` �
 
 ## [Unreleased]
 
+### Fixed
+- **Params→workflow lost the model when A1111 gave only a hash.** Captured params
+  almost always name the checkpoint by `Model hash:` (AutoV2), not a filename, so a
+  synthesized workflow fell back to a `model.safetensors` placeholder → empty
+  checkpoint in ComfyUI. `convert` now captures the hash and emits a
+  `ckpt_name: "hash:<autov2>"` sentinel, and `comfy::resolve_model` resolves it via
+  the catalog (`autov2` / `sha256[:10]`, 16k+ files carry it) to the real file —
+  using it if installed, else hotloading from the vault by its known `local_path`.
+  The structural transform was already correct (sampler/scheduler/cfg/seed/size/
+  prompts); only the model reference was dropped. Stale synthesized `*.workflow.json`
+  caches were cleared so they regenerate with the sentinel.
+
+## [0.1.3] - 2026-06-30
+
 ### Changed
+- **Self-updater brought to TinyBooth parity.** Periodic background re-check
+  (5-min `RECHECK_INTERVAL` + `maybe_spawn_recheck`, woken via
+  `request_repaint_after`) so a freshly-published release surfaces mid-session,
+  not only at startup; `git_update::render` now returns a `#[must_use]` close
+  signal and the app shuts down cleanly through `ViewportCommand::Close` on
+  install (was a raw `process::exit`, so Drops/config-save run before the MSI
+  swaps the exe); the version-label click always forces a fresh round-trip; added
+  `is_newer` unit tests. The CI/MSI/release chain was already at parity (root
+  `release.yml` builds + publishes the MSI that the updater pulls).
 - "Open workflow in ComfyUI" now **resolves the workflow's real model** instead of
   substituting a compatible one. Order: keep it if installed → match an installed
   file under a near-identical name (camelCase/digit-aware token overlap, e.g.
@@ -126,7 +149,8 @@ app's runtime version is derived from the latest `v*` git tag (`app/build.rs` �
 - `AIPROD_CORRELATIONS.md` — knowledge artifact cross-referencing the AIProd
   ComfyUI provisioning work (complementary curated-baseline system).
 
-[Unreleased]: https://github.com/ophiocus/synthetrix/compare/v0.1.2...HEAD
+[Unreleased]: https://github.com/ophiocus/synthetrix/compare/v0.1.3...HEAD
+[0.1.3]: https://github.com/ophiocus/synthetrix/compare/v0.1.2...v0.1.3
 [0.1.2]: https://github.com/ophiocus/synthetrix/compare/v0.1.1...v0.1.2
 [0.1.1]: https://github.com/ophiocus/synthetrix/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/ophiocus/synthetrix/releases/tag/v0.1.0
