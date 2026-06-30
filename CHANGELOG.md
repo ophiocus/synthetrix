@@ -10,6 +10,16 @@ app's runtime version is derived from the latest `v*` git tag (`app/build.rs` �
 ## [Unreleased]
 
 ### Added
+- **Manifest registry lifecycle** — Audit (vault / NVMe / orphan scan) and Heal
+  (reset vanished rows for re-fetch; adopt loose files by filename); Hotload
+  (Promote) / Evict / Lock with eviction blocked while a replica is locked.
+- **Recover orphans** — identify untracked vault files by SHA256 via CivitAI's
+  by-hash endpoint (`civitai::model_version_by_hash` + `model_by_id`) and adopt
+  matches into the catalog (`db::adopt_by_hash`).
+- **Example-image + embedded-workflow harvest** (`harvest_images` / `harvest_all`)
+  — pull per-model gallery images on download and extract ComfyUI `workflow` /
+  `prompt` + A1111 `parameters` from PNG text chunks; `db::downloaded_model_ids`.
+- **Parallel cover-thumbnail fetch pool** in the Picker; thumbs/likes sort option.
 - **Manifest silverbox (full-size image overlay).** Clicking any captured image in
   the Manifest strip opens a resizable full-size overlay.
 - **ⓘ info button** on each captured image — replaces the old WF / A1 click badges.
@@ -22,6 +32,18 @@ app's runtime version is derived from the latest `v*` git tag (`app/build.rs` �
   manifest as tracked rows (HF-namespaced negative ids, `status=promoted`, vault
   `local_path` + NVMe `nvme_path`, sha256). Closes the gap where the CivitAI-bound
   recover/heal/audit can't adopt a HF model (e.g. WAN 2.2 via AIProd `provision.py`).
+
+### Fixed
+- **`fetch.py` lost the CivitAI token on download.** CivitAI 302-redirects to S3
+  and `requests` strips the `Authorization` header across hosts, so token-gated
+  files 401 (or save an HTML login page as a `.safetensors`). Send the token as a
+  `?token=` query param so it survives the redirect, plus an HTML content-type
+  guard that rejects a non-model response.
+
+### Docs
+- **`CONSOLIDATION.md`** — proposed "one vault, one runtime" plan: collapse the
+  scattered ComfyUI/model folders into VAULT (`H:\Models`, HDD) + RUNTIME (NVMe),
+  with the Synthetrix app as the download→vault→promote→evict bridge.
 
 ## [0.1.0] - 2026-06-28
 
