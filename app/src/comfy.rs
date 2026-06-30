@@ -59,7 +59,12 @@ fn ensure_png_with_workflow(bytes: &[u8], wf_json: Option<&str>) -> Result<Vec<u
 /// thread). `wf_json` is the workflow text to embed if the PNG lacks one.
 pub fn open_in_comfy(image_path: &str, wf_json: Option<&str>) -> Result<(), String> {
     let bytes = std::fs::read(image_path).map_err(|e| format!("read image: {e}"))?;
-    let png = ensure_png_with_workflow(&bytes, wf_json)?;
+    let client = reqwest::blocking::Client::new();
+    // Repoint the workflow's model loaders at an installed model, so the graph
+    // doesn't open with an empty/invalid checkpoint widget ("fails to show the
+    // model"). Best-effort: if ComfyUI doesn't answer, embed the workflow as-is.
+    let patched = wf_json.map(|w| patch_model_names(&client, w));
+    let png = ensure_png_with_workflow(&bytes, patched.as_deref())?;
 
     let stem = Path::new(image_path)
         .file_stem()
@@ -77,7 +82,6 @@ pub fn open_in_comfy(image_path: &str, wf_json: Option<&str>) -> Result<(), Stri
         .text("type", "input")
         .text("overwrite", "true");
 
-    let client = reqwest::blocking::Client::new();
     let resp = client
         .post(format!("{COMFY}/upload/image"))
         .multipart(form)
@@ -108,6 +112,122 @@ pub fn open_in_comfy(image_path: &str, wf_json: Option<&str>) -> Result<(), Stri
     );
     let url = format!("{COMFY}/?synflow={}&synname={}", enc(&view), enc(name));
     open_url(&url)
+}
+
+/// The installed values for a loader field, e.g. CheckpointLoaderSimple/ckpt_name.
+fn obj_enum(client: &reqwest::blocking::Client, node: &str, field: &str) -> Vec<String> {
+    let resp = match client
+        .get(format!("{COMFY}/object_info/{node}"))
+        .send()
+        .ok()
+        .and_then(|r| r.error_for_status().ok())
+    {
+        Some(r) => r,
+        None => return Vec::new(),
+    };
+    let j: serde_json::Value = match resp.json() {
+        Ok(j) => j,
+        Err(_) => return Vec::new(),
+    };
+    j.get(node)
+        .and_then(|n| n.get("input"))
+        .and_then(|i| i.get("required"))
+        .and_then(|r| r.get(field))
+        .and_then(|f| f.get(0))
+        .and_then(|e| e.as_array())
+        .map(|a| {
+            a.iter()
+                .filter_map(|x| x.as_str().map(String::from))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// Pick a replacement model when `current` isn't installed: a fuzzy name match if
+/// one exists, else the first installed model. None = keep current (already valid
+/// or nothing installed to swap in).
+fn pick_model(current: &str, installed: &[String]) -> Option<String> {
+    if installed.is_empty() || installed.iter().any(|m| m == current) {
+        return None;
+    }
+    let stem = std::path::Path::new(current)
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or(current)
+        .to_lowercase();
+    let hit = installed.iter().find(|m| {
+        let ml = m.to_lowercase();
+        !stem.is_empty()
+            && (ml.contains(&stem) || stem.contains(ml.trim_end_matches(".safetensors")))
+    });
+    Some(hit.cloned().unwrap_or_else(|| installed[0].clone()))
+}
+
+/// Rewrite CheckpointLoaderSimple/UNETLoader model names in a workflow (UI or API
+/// format) to models ComfyUI actually has installed.
+fn patch_model_names(client: &reqwest::blocking::Client, wf: &str) -> String {
+    let ckpts = obj_enum(client, "CheckpointLoaderSimple", "ckpt_name");
+    let unets = obj_enum(client, "UNETLoader", "unet_name");
+    if ckpts.is_empty() && unets.is_empty() {
+        return wf.to_string();
+    }
+    let mut v: serde_json::Value = match serde_json::from_str(wf) {
+        Ok(v) => v,
+        Err(_) => return wf.to_string(),
+    };
+    let is_ui = v.get("nodes").map(|n| n.is_array()).unwrap_or(false);
+    if is_ui {
+        if let Some(nodes) = v.get_mut("nodes").and_then(|n| n.as_array_mut()) {
+            for n in nodes.iter_mut() {
+                let t = n
+                    .get("type")
+                    .and_then(|t| t.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                let list = if t.contains("CheckpointLoader") {
+                    &ckpts
+                } else if t == "UNETLoader" {
+                    &unets
+                } else {
+                    continue;
+                };
+                if let Some(first) = n
+                    .get_mut("widgets_values")
+                    .and_then(|w| w.as_array_mut())
+                    .and_then(|a| a.get_mut(0))
+                {
+                    if let Some(cur) = first.as_str() {
+                        if let Some(rep) = pick_model(cur, list) {
+                            *first = serde_json::Value::String(rep);
+                        }
+                    }
+                }
+            }
+        }
+    } else if let Some(obj) = v.as_object_mut() {
+        for (_, n) in obj.iter_mut() {
+            let t = n
+                .get("class_type")
+                .and_then(|c| c.as_str())
+                .unwrap_or("")
+                .to_string();
+            let (field, list) = if t.contains("CheckpointLoader") {
+                ("ckpt_name", &ckpts)
+            } else if t == "UNETLoader" {
+                ("unet_name", &unets)
+            } else {
+                continue;
+            };
+            if let Some(inp) = n.get_mut("inputs").and_then(|i| i.as_object_mut()) {
+                if let Some(cur) = inp.get(field).and_then(|x| x.as_str()).map(String::from) {
+                    if let Some(rep) = pick_model(&cur, list) {
+                        inp.insert(field.to_string(), serde_json::Value::String(rep));
+                    }
+                }
+            }
+        }
+    }
+    serde_json::to_string(&v).unwrap_or_else(|_| wf.to_string())
 }
 
 #[cfg(target_os = "windows")]

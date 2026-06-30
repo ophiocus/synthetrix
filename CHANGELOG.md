@@ -22,6 +22,13 @@ app's runtime version is derived from the latest `v*` git tag (`app/build.rs` �
 - `pngmeta::insert_text_chunk` + `has_embedded_workflow` (PNG `tEXt` writer with
   CRC-32, round-trip tested); new `comfy` module (embed → upload → open).
 
+### Fixed
+- "Open workflow in ComfyUI" opened the graph with an **empty checkpoint widget** —
+  the workflow referenced a model filename ComfyUI doesn't have (synthesized graphs
+  guess it from the A1111 `Model:` field). Now repoints `CheckpointLoaderSimple` /
+  `UNETLoader` to an installed model (queried live from `/object_info`; fuzzy name
+  match, else the first available) before sending.
+
 ## [0.1.1] - 2026-06-29
 
 ### Added
