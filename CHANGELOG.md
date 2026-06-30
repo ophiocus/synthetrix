@@ -9,6 +9,8 @@ app's runtime version is derived from the latest `v*` git tag (`app/build.rs` â†
 
 ## [Unreleased]
 
+## [0.1.2] - 2026-06-30
+
 ### Added
 - **"Open workflow in ComfyUI"** button in the silverbox status bar â€” *programmatically*
   loads the image's workflow into the running ComfyUI (no copy/paste). It ensures the
@@ -111,6 +113,7 @@ app's runtime version is derived from the latest `v*` git tag (`app/build.rs` â†
 - `AIPROD_CORRELATIONS.md` â€” knowledge artifact cross-referencing the AIProd
   ComfyUI provisioning work (complementary curated-baseline system).
 
-[Unreleased]: https://github.com/ophiocus/synthetrix/compare/v0.1.1...HEAD
+[Unreleased]: https://github.com/ophiocus/synthetrix/compare/v0.1.2...HEAD
+[0.1.2]: https://github.com/ophiocus/synthetrix/compare/v0.1.1...v0.1.2
 [0.1.1]: https://github.com/ophiocus/synthetrix/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/ophiocus/synthetrix/releases/tag/v0.1.0
