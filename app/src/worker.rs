@@ -2,8 +2,8 @@
 //! UI sends `Cmd`, worker streams back `Event`. One thread, serial execution.
 
 use crate::civitai::Client;
-use crate::config::Config;
-use crate::{db, pngmeta};
+use crate::config::{Config, Project};
+use crate::{db, pngmeta, project};
 use eframe::egui;
 use serde_json::Value;
 use sha2::{Digest, Sha256};
@@ -15,6 +15,8 @@ use std::time::Duration;
 
 pub enum Cmd {
     Reconfigure(Config),
+    /// Open an IP as the active project (opens its per-IP project.sqlite).
+    SetProject(Project),
     Sync,
     QueryPicks(db::PickFilter),
     QueryManifest,
@@ -46,7 +48,21 @@ pub enum Event {
     /// A cover landed on disk: (model_id, local_path).
     CoverReady(i64, String),
     CoverFailed(i64),
+    /// The active project was opened; carries its roots + dashboard counts.
+    ProjectInfo(ProjectInfo),
     Error(String),
+}
+
+/// Snapshot of the open IP for the dashboard.
+#[derive(Clone)]
+pub struct ProjectInfo {
+    pub name: String,
+    pub lore_root: String,
+    pub engine_root: String,
+    pub db_path: String,
+    pub asset_vault: String,
+    pub lore_root_exists: bool,
+    pub stats: project::ProjectStats,
 }
 
 pub struct Worker {
@@ -164,6 +180,7 @@ impl CoverFetcher {
 struct State {
     cfg: Config,
     conn: Option<rusqlite::Connection>,
+    project_conn: Option<rusqlite::Connection>,
     client: Client,
     ctx: egui::Context,
     tx: Sender<Event>,
@@ -183,6 +200,7 @@ fn run(cfg: Config, ctx: egui::Context, cmd_rx: Receiver<Cmd>, tx: Sender<Event>
     let client = Client::new(cfg.effective_token());
     let mut st = State {
         conn: db::open(&cfg.catalog_dir).ok(),
+        project_conn: None,
         client,
         cfg,
         ctx,
@@ -204,6 +222,7 @@ fn handle(st: &mut State, cmd: Cmd) {
             st.cfg = cfg;
             st.status("reconfigured");
         }
+        Cmd::SetProject(p) => set_project(st, p),
         Cmd::QueryPicks(f) => {
             if let Some(conn) = &st.conn {
                 match db::query_picks(conn, &f) {
@@ -256,6 +275,32 @@ fn refresh_manifest(st: &State) {
     if let Some(conn) = &st.conn {
         if let Ok(rows) = db::query_manifest(conn) {
             st.emit(Event::Manifest(rows));
+        }
+    }
+}
+
+/// Open an IP as the active project: open (or create) its project.sqlite and
+/// report its roots + counts to the dashboard.
+fn set_project(st: &mut State, p: Project) {
+    let db_path = p.project_db_path();
+    match project::open(&db_path, &p.name) {
+        Ok(conn) => {
+            let stats = project::stats(&conn);
+            st.project_conn = Some(conn);
+            st.emit(Event::ProjectInfo(ProjectInfo {
+                name: p.name.clone(),
+                lore_root: p.lore_root.clone(),
+                engine_root: p.engine_root.clone(),
+                db_path: db_path.to_string_lossy().into_owned(),
+                asset_vault: p.asset_vault_path().to_string_lossy().into_owned(),
+                lore_root_exists: Path::new(&p.lore_root).is_dir(),
+                stats,
+            }));
+            st.status(format!("project: {}", p.name));
+        }
+        Err(e) => {
+            st.project_conn = None;
+            st.emit(Event::Error(format!("open project {}: {e}", p.name)));
         }
     }
 }

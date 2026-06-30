@@ -1,5 +1,51 @@
 use serde::{Deserialize, Serialize};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+
+/// One game IP / project Synthetrix can focus on (the "currently open project").
+/// The model vault (vault_root/catalog) is global/shared; everything per-IP —
+/// lore, prompts, generated assets, metadata, releases — hangs off `lore_root`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Project {
+    pub name: String,
+    pub lore_root: String,   // lore-bible repo, e.g. I:/moar | I:/discarded
+    pub engine_root: String, // UE5 project root (may be empty), e.g. F:/moarvibe
+    pub asset_vault: String, // generated-asset vault; empty => <lore_root>/.synthetrix/assets
+}
+
+impl Project {
+    pub fn synthetrix_dir(&self) -> PathBuf {
+        Path::new(&self.lore_root).join(".synthetrix")
+    }
+    /// Per-IP project DB (lore index, prompt matrix, assets, jobs, releases).
+    pub fn project_db_path(&self) -> PathBuf {
+        self.synthetrix_dir().join("project.sqlite")
+    }
+    pub fn asset_vault_path(&self) -> PathBuf {
+        if self.asset_vault.trim().is_empty() {
+            self.synthetrix_dir().join("assets")
+        } else {
+            PathBuf::from(&self.asset_vault)
+        }
+    }
+}
+
+/// Seeded IPs (used on first run / when config carries none).
+fn default_projects() -> Vec<Project> {
+    vec![
+        Project {
+            name: "MOAR".into(),
+            lore_root: "I:/moar".into(),
+            engine_root: "F:/moarvibe".into(),
+            asset_vault: String::new(),
+        },
+        Project {
+            name: "DISCARDED".into(),
+            lore_root: "I:/discarded".into(),
+            engine_root: String::new(),
+            asset_vault: String::new(),
+        },
+    ]
+}
 
 /// Persistent app config (window prefs + storage tiers + crawl knobs).
 /// Lives at %APPDATA%/Synthetrix/config.json.
@@ -7,6 +53,12 @@ use std::path::PathBuf;
 pub struct Config {
     pub dark_mode: bool,
     pub zoom: f32,
+
+    // Per-IP project registry + the currently-open project (by name).
+    #[serde(default)]
+    pub projects: Vec<Project>,
+    #[serde(default)]
+    pub active_project: Option<String>,
 
     // Storage tiers.
     pub vault_root: String,   // HDD vault: the authoritative model tree
@@ -33,6 +85,8 @@ impl Default for Config {
         Self {
             dark_mode: true,
             zoom: 1.0,
+            projects: default_projects(),
+            active_project: Some("MOAR".into()),
             vault_root: "H:/Models".into(),
             catalog_dir: "H:/Models/.civitai".into(),
             gallery_root: "H:/Models/.civitai/gallery".into(),
@@ -74,10 +128,24 @@ impl Config {
         let Some(p) = Self::path() else {
             return Self::default();
         };
-        std::fs::read_to_string(&p)
+        let mut cfg: Config = std::fs::read_to_string(&p)
             .ok()
             .and_then(|s| serde_json::from_str(&s).ok())
-            .unwrap_or_default()
+            .unwrap_or_default();
+        // Older configs predate the project registry — seed it.
+        if cfg.projects.is_empty() {
+            cfg.projects = default_projects();
+        }
+        if cfg.active_project.is_none() {
+            cfg.active_project = cfg.projects.first().map(|p| p.name.clone());
+        }
+        cfg
+    }
+
+    /// The currently-open project, if any.
+    pub fn active(&self) -> Option<&Project> {
+        let name = self.active_project.as_ref()?;
+        self.projects.iter().find(|p| &p.name == name)
     }
 
     pub fn save(&self) {

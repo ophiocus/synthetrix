@@ -60,6 +60,78 @@ fn state_badge(status: &str, locked: bool) -> (egui::Color32, String) {
     }
 }
 
+// ---- Dashboard -------------------------------------------------------------
+
+fn stat_box(ui: &mut egui::Ui, label: &str, n: i64) {
+    ui.vertical(|ui| {
+        ui.label(egui::RichText::new(n.to_string()).heading().strong());
+        ui.weak(label);
+    });
+    ui.add_space(20.0);
+}
+
+pub fn dashboard(app: &mut SynthetrixApp, ui: &mut egui::Ui) {
+    ui.add_space(8.0);
+    ui.heading("Dashboard — IP cockpit");
+    ui.separator();
+    match &app.project_info {
+        Some(info) => {
+            ui.label(
+                egui::RichText::new(format!("◉ {}", info.name))
+                    .heading()
+                    .strong(),
+            );
+            ui.add_space(4.0);
+            egui::Grid::new("proj_grid")
+                .num_columns(2)
+                .striped(true)
+                .spacing([16.0, 4.0])
+                .show(ui, |ui| {
+                    ui.label("Lore root");
+                    if info.lore_root_exists {
+                        ui.label(&info.lore_root);
+                    } else {
+                        ui.colored_label(
+                            egui::Color32::from_rgb(220, 120, 120),
+                            format!("{} (missing)", info.lore_root),
+                        );
+                    }
+                    ui.end_row();
+                    ui.label("Engine root");
+                    ui.label(if info.engine_root.is_empty() {
+                        "—"
+                    } else {
+                        &info.engine_root
+                    });
+                    ui.end_row();
+                    ui.label("Asset vault");
+                    ui.label(&info.asset_vault);
+                    ui.end_row();
+                    ui.label("Project DB");
+                    ui.weak(&info.db_path);
+                    ui.end_row();
+                });
+            ui.add_space(12.0);
+            ui.horizontal(|ui| {
+                stat_box(ui, "assets", info.stats.assets);
+                stat_box(ui, "jobs", info.stats.jobs);
+                stat_box(ui, "prompts", info.stats.prompts);
+                stat_box(ui, "lore", info.stats.lore);
+            });
+            ui.add_space(12.0);
+            ui.weak(
+                "Coming online for this IP: Forge (prompt→asset), Asset vault, \
+                 Prompt matrix, Lore, Releases. The global model vault stays shared \
+                 across IPs (Fetcher / Picker / Manifest).",
+            );
+        }
+        None => {
+            ui.add_space(20.0);
+            ui.weak("No project open. Pick an IP from the switcher (top-right).");
+        }
+    }
+}
+
 // ---- Fetcher ---------------------------------------------------------------
 
 pub fn fetcher(app: &mut SynthetrixApp, ui: &mut egui::Ui) {

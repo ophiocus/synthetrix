@@ -1,13 +1,14 @@
 use crate::config::Config;
 use crate::db;
 use crate::git_update::UpdateState;
-use crate::worker::{Cmd, CoverFetcher, Event, Worker};
+use crate::worker::{Cmd, CoverFetcher, Event, ProjectInfo, Worker};
 use eframe::egui;
 use std::collections::HashSet;
 use std::sync::mpsc;
 
 #[derive(PartialEq, Clone, Copy)]
 pub enum Tab {
+    Dashboard,
     Fetcher,
     Picker,
     Manifest,
@@ -139,6 +140,8 @@ pub struct SynthetrixApp {
     pub worker: Worker,
     pub covers_pool: CoverFetcher,
     pub tab: Tab,
+    /// Snapshot of the currently-open IP (for the Dashboard).
+    pub project_info: Option<ProjectInfo>,
 
     pub status: Option<String>,
     pub busy: bool,
@@ -185,6 +188,10 @@ impl SynthetrixApp {
         let covers_pool =
             CoverFetcher::spawn(&config, cc.egui_ctx.clone(), worker.evt_tx.clone(), 6);
         let _ = worker.tx.send(Cmd::QueryManifest);
+        // Open the active IP as the current project.
+        if let Some(p) = config.active() {
+            let _ = worker.tx.send(Cmd::SetProject(p.clone()));
+        }
 
         let (tx, rx) = mpsc::channel();
         std::thread::spawn(move || {
@@ -195,7 +202,8 @@ impl SynthetrixApp {
             config,
             worker,
             covers_pool,
-            tab: Tab::Fetcher,
+            tab: Tab::Dashboard,
+            project_info: None,
             status: None,
             busy: false,
             sync: None,
@@ -273,6 +281,9 @@ impl SynthetrixApp {
                 Event::CoverFailed(id) => {
                     self.covers.insert(id, CoverState::Missing);
                 }
+                Event::ProjectInfo(info) => {
+                    self.project_info = Some(info);
+                }
                 Event::Error(e) => {
                     let msg = format!("⚠ {e}");
                     self.log.push(msg.clone());
@@ -310,21 +321,60 @@ impl eframe::App for SynthetrixApp {
         }
         ctx.request_repaint_after(crate::git_update::RECHECK_INTERVAL);
 
+        // Project switcher data (locals avoid nested &mut self borrows in the bar).
+        let projects: Vec<String> = self
+            .config
+            .projects
+            .iter()
+            .map(|p| p.name.clone())
+            .collect();
+        let cur_project = self.config.active_project.clone().unwrap_or_default();
+        let busy = self.busy;
+        let mut switch_to: Option<String> = None;
         egui::TopBottomPanel::top("top_bar").show(ctx, |ui| {
             egui::menu::bar(ui, |ui| {
                 ui.heading("Synthetrix");
                 ui.separator();
+                ui.selectable_value(&mut self.tab, Tab::Dashboard, "▦ Dashboard");
                 ui.selectable_value(&mut self.tab, Tab::Fetcher, "⬇ Fetcher");
                 ui.selectable_value(&mut self.tab, Tab::Picker, "☑ Picker");
                 ui.selectable_value(&mut self.tab, Tab::Manifest, "🗂 Manifest");
                 ui.selectable_value(&mut self.tab, Tab::Settings, "⚙ Settings");
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if self.busy {
+                    if busy {
                         ui.spinner();
                     }
+                    ui.separator();
+                    egui::ComboBox::from_id_source("project_switch")
+                        .selected_text(format!("◉ {cur_project}"))
+                        .show_ui(ui, |ui| {
+                            for name in &projects {
+                                if ui.selectable_label(name == &cur_project, name).clicked()
+                                    && name != &cur_project
+                                {
+                                    switch_to = Some(name.clone());
+                                }
+                            }
+                        });
+                    ui.label("IP:");
                 });
             });
         });
+        if let Some(name) = switch_to {
+            self.config.active_project = Some(name.clone());
+            self.config.save();
+            if let Some(p) = self
+                .config
+                .projects
+                .iter()
+                .find(|p| p.name == name)
+                .cloned()
+            {
+                self.send(Cmd::SetProject(p));
+            }
+            self.project_info = None;
+            self.tab = Tab::Dashboard;
+        }
 
         let mut should_close = false;
         egui::TopBottomPanel::bottom("bottom_bar").show(ctx, |ui| {
@@ -348,6 +398,7 @@ impl eframe::App for SynthetrixApp {
         }
 
         egui::CentralPanel::default().show(ctx, |ui| match self.tab {
+            Tab::Dashboard => crate::tabs::dashboard(self, ui),
             Tab::Fetcher => crate::tabs::fetcher(self, ui),
             Tab::Picker => crate::tabs::picker(self, ui),
             Tab::Manifest => crate::tabs::manifest(self, ui),

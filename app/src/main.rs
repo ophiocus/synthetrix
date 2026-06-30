@@ -12,6 +12,7 @@ mod convert;
 mod db;
 mod git_update;
 mod pngmeta;
+mod project;
 mod tabs;
 mod wfgraph;
 mod worker;
