@@ -82,3 +82,124 @@ pub fn stats(conn: &Connection) -> ProjectStats {
         lore: c("SELECT COUNT(*) FROM lore_index"),
     }
 }
+
+// ---- Jobs (generation queue) ----------------------------------------------
+
+#[derive(Clone)]
+pub struct JobRow {
+    pub id: i64,
+    pub kind: String,
+    pub status: String,
+    pub backend: String,
+    pub entity: String,
+    pub prompt: String,
+    pub output_path: Option<String>,
+    pub detail: Option<String>,
+    pub created_at: String,
+}
+
+/// Insert a queued job; returns its id.
+pub fn insert_job(
+    conn: &Connection,
+    kind: &str,
+    backend: &str,
+    entity: &str,
+    prompt: &str,
+    params: &str,
+) -> i64 {
+    let _ = conn.execute(
+        "INSERT INTO jobs(kind,status,backend,entity,prompt,params)
+         VALUES(?1,'queued',?2,?3,?4,?5)",
+        rusqlite::params![kind, backend, entity, prompt, params],
+    );
+    conn.last_insert_rowid()
+}
+
+pub fn update_job(conn: &Connection, id: i64, status: &str, output: Option<&str>, detail: &str) {
+    let _ = conn.execute(
+        "UPDATE jobs SET status=?1, output_path=COALESCE(?2,output_path),
+            detail=?3, updated_at=datetime('now') WHERE id=?4",
+        rusqlite::params![status, output, detail, id],
+    );
+}
+
+pub fn recent_jobs(conn: &Connection, limit: i64) -> Vec<JobRow> {
+    let mut stmt = match conn.prepare(
+        "SELECT id,kind,status,backend,entity,prompt,output_path,detail,created_at
+         FROM jobs ORDER BY id DESC LIMIT ?1",
+    ) {
+        Ok(s) => s,
+        Err(_) => return Vec::new(),
+    };
+    stmt.query_map([limit], |r| {
+        Ok(JobRow {
+            id: r.get(0)?,
+            kind: r.get::<_, Option<String>>(1)?.unwrap_or_default(),
+            status: r.get::<_, Option<String>>(2)?.unwrap_or_default(),
+            backend: r.get::<_, Option<String>>(3)?.unwrap_or_default(),
+            entity: r.get::<_, Option<String>>(4)?.unwrap_or_default(),
+            prompt: r.get::<_, Option<String>>(5)?.unwrap_or_default(),
+            output_path: r.get(6)?,
+            detail: r.get(7)?,
+            created_at: r.get::<_, Option<String>>(8)?.unwrap_or_default(),
+        })
+    })
+    .map(|rows| rows.filter_map(|r| r.ok()).collect())
+    .unwrap_or_default()
+}
+
+// ---- Assets (the IP's digital vault) --------------------------------------
+
+#[derive(Clone)]
+pub struct AssetRow {
+    pub id: i64,
+    pub kind: String,
+    pub name: String,
+    pub entity: String,
+    pub media_type: String,
+    pub path: String,
+    pub created_at: String,
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn insert_asset(
+    conn: &Connection,
+    kind: &str,
+    name: &str,
+    entity: &str,
+    media_type: &str,
+    path: &str,
+    sha256: &str,
+    metadata: &str,
+    job_id: i64,
+) -> i64 {
+    let _ = conn.execute(
+        "INSERT INTO assets(kind,name,entity,media_type,path,sha256,metadata,job_id)
+         VALUES(?1,?2,?3,?4,?5,?6,?7,?8)",
+        rusqlite::params![kind, name, entity, media_type, path, sha256, metadata, job_id],
+    );
+    conn.last_insert_rowid()
+}
+
+pub fn recent_assets(conn: &Connection, limit: i64) -> Vec<AssetRow> {
+    let mut stmt = match conn.prepare(
+        "SELECT id,kind,name,entity,media_type,path,created_at
+         FROM assets ORDER BY id DESC LIMIT ?1",
+    ) {
+        Ok(s) => s,
+        Err(_) => return Vec::new(),
+    };
+    stmt.query_map([limit], |r| {
+        Ok(AssetRow {
+            id: r.get(0)?,
+            kind: r.get::<_, Option<String>>(1)?.unwrap_or_default(),
+            name: r.get::<_, Option<String>>(2)?.unwrap_or_default(),
+            entity: r.get::<_, Option<String>>(3)?.unwrap_or_default(),
+            media_type: r.get::<_, Option<String>>(4)?.unwrap_or_default(),
+            path: r.get::<_, Option<String>>(5)?.unwrap_or_default(),
+            created_at: r.get::<_, Option<String>>(6)?.unwrap_or_default(),
+        })
+    })
+    .map(|rows| rows.filter_map(|r| r.ok()).collect())
+    .unwrap_or_default()
+}

@@ -132,6 +132,167 @@ pub fn dashboard(app: &mut SynthetrixApp, ui: &mut egui::Ui) {
     }
 }
 
+// ---- Forge -----------------------------------------------------------------
+
+pub fn forge(app: &mut SynthetrixApp, ui: &mut egui::Ui) {
+    ui.add_space(8.0);
+    ui.heading("Forge — text → image");
+    if app.project_info.is_none() {
+        ui.add_space(16.0);
+        ui.weak("No project open. Pick an IP from the switcher (top-right) first.");
+        return;
+    }
+    ui.weak(format!(
+        "Backend: local ComfyUI @ {}   ·   output → the IP's asset vault",
+        app.config.comfy_url
+    ));
+    ui.separator();
+
+    let mut submit = false;
+    {
+        let fu = &mut app.forge_ui;
+        ui.horizontal(|ui| {
+            ui.label("Entity:");
+            ui.add(egui::TextEdit::singleline(&mut fu.entity).desired_width(140.0))
+                .on_hover_text("asset name stem, e.g. med-pack-small");
+            ui.label("Model (ckpt):");
+            ui.add(egui::TextEdit::singleline(&mut fu.model).desired_width(260.0))
+                .on_hover_text("checkpoint filename as ComfyUI sees it");
+        });
+        ui.label("Prompt:");
+        ui.add(
+            egui::TextEdit::multiline(&mut fu.prompt)
+                .desired_rows(3)
+                .desired_width(f32::INFINITY),
+        );
+        ui.label("Negative:");
+        ui.add(
+            egui::TextEdit::multiline(&mut fu.negative)
+                .desired_rows(2)
+                .desired_width(f32::INFINITY),
+        );
+        ui.horizontal(|ui| {
+            ui.label("W");
+            ui.add(
+                egui::DragValue::new(&mut fu.width)
+                    .range(64..=2048)
+                    .speed(8),
+            );
+            ui.label("H");
+            ui.add(
+                egui::DragValue::new(&mut fu.height)
+                    .range(64..=2048)
+                    .speed(8),
+            );
+            ui.label("Steps");
+            ui.add(egui::DragValue::new(&mut fu.steps).range(1..=150));
+            ui.label("CFG");
+            ui.add(
+                egui::DragValue::new(&mut fu.cfg)
+                    .range(0.0..=30.0)
+                    .speed(0.1),
+            );
+            ui.label("Sampler");
+            ui.add(egui::TextEdit::singleline(&mut fu.sampler).desired_width(90.0));
+            ui.label("Sched");
+            ui.add(egui::TextEdit::singleline(&mut fu.scheduler).desired_width(70.0));
+            ui.label("Seed");
+            ui.add(egui::TextEdit::singleline(&mut fu.seed).desired_width(90.0));
+        });
+    }
+    ui.add_space(6.0);
+    let ready = !app.forge_ui.prompt.trim().is_empty()
+        && !app.forge_ui.model.trim().is_empty()
+        && !app.busy;
+    ui.horizontal(|ui| {
+        if ui
+            .add_enabled(
+                ready,
+                egui::Button::new("✦ Generate").min_size(egui::vec2(150.0, 30.0)),
+            )
+            .clicked()
+        {
+            submit = true;
+        }
+        if app.busy {
+            ui.spinner();
+            ui.label("generating…");
+        }
+        if ui
+            .button("↻")
+            .on_hover_text("refresh jobs/assets")
+            .clicked()
+        {
+            app.send(Cmd::QueryForge);
+        }
+    });
+    if submit {
+        let fu = &app.forge_ui;
+        let req = crate::backends::GenRequest {
+            prompt: fu.prompt.clone(),
+            negative: fu.negative.clone(),
+            model: fu.model.trim().to_string(),
+            width: fu.width,
+            height: fu.height,
+            steps: fu.steps,
+            cfg: fu.cfg,
+            sampler: fu.sampler.trim().to_string(),
+            scheduler: fu.scheduler.trim().to_string(),
+            seed: fu.seed.trim().parse().unwrap_or(-1),
+        };
+        let entity = fu.entity.clone();
+        app.send(Cmd::Generate { req, entity });
+    }
+
+    ui.separator();
+    egui::ScrollArea::vertical().show(ui, |ui| {
+        if !app.forge_assets.is_empty() {
+            ui.label(egui::RichText::new("Generated").weak());
+            ui.horizontal_wrapped(|ui| {
+                for a in &app.forge_assets {
+                    if a.media_type.starts_with("image") {
+                        ui.add(
+                            egui::Image::new(format!("file://{}", a.path))
+                                .max_height(128.0)
+                                .maintain_aspect_ratio(true)
+                                .rounding(4.0),
+                        )
+                        .on_hover_text(format!(
+                            "#{} {} · {} · {} · {}",
+                            a.id, a.name, a.kind, a.entity, a.created_at
+                        ));
+                    }
+                }
+            });
+            ui.separator();
+        }
+        ui.label(egui::RichText::new("Jobs").weak());
+        for j in &app.forge_jobs {
+            let (col, glyph) = match j.status.as_str() {
+                "done" => (egui::Color32::from_rgb(80, 200, 120), "✔"),
+                "failed" => (egui::Color32::from_rgb(220, 100, 100), "✘"),
+                _ => (egui::Color32::from_rgb(90, 160, 240), "…"),
+            };
+            ui.horizontal(|ui| {
+                ui.colored_label(col, glyph);
+                ui.weak(format!("#{} [{}] {}·{}", j.id, j.status, j.kind, j.backend));
+                ui.strong(&j.entity);
+                let p: String = j.prompt.chars().take(60).collect();
+                ui.label(p);
+                if let Some(d) = &j.detail {
+                    ui.weak(d);
+                }
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    ui.weak(&j.created_at);
+                    if j.output_path.is_some() {
+                        ui.weak("🖼");
+                    }
+                });
+            });
+        }
+    });
+}
+
 // ---- Fetcher ---------------------------------------------------------------
 
 pub fn fetcher(app: &mut SynthetrixApp, ui: &mut egui::Ui) {

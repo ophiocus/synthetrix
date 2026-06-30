@@ -9,10 +9,44 @@ use std::sync::mpsc;
 #[derive(PartialEq, Clone, Copy)]
 pub enum Tab {
     Dashboard,
+    Forge,
     Fetcher,
     Picker,
     Manifest,
     Settings,
+}
+
+/// Forge tab inputs (text→image generation form).
+pub struct ForgeUi {
+    pub entity: String,
+    pub prompt: String,
+    pub negative: String,
+    pub model: String,
+    pub width: u32,
+    pub height: u32,
+    pub steps: u32,
+    pub cfg: f32,
+    pub sampler: String,
+    pub scheduler: String,
+    pub seed: String,
+}
+
+impl Default for ForgeUi {
+    fn default() -> Self {
+        Self {
+            entity: String::new(),
+            prompt: String::new(),
+            negative: String::new(),
+            model: String::new(),
+            width: 1024,
+            height: 1024,
+            steps: 25,
+            cfg: 7.0,
+            sampler: "dpmpp_2m".into(),
+            scheduler: "karras".into(),
+            seed: "-1".into(),
+        }
+    }
 }
 
 /// Per-model cover thumbnail state (resolved against the on-disk cache).
@@ -142,6 +176,10 @@ pub struct SynthetrixApp {
     pub tab: Tab,
     /// Snapshot of the currently-open IP (for the Dashboard).
     pub project_info: Option<ProjectInfo>,
+    /// Forge tab state: form + recent jobs/assets for the active IP.
+    pub forge_ui: ForgeUi,
+    pub forge_jobs: Vec<crate::project::JobRow>,
+    pub forge_assets: Vec<crate::project::AssetRow>,
 
     pub status: Option<String>,
     pub busy: bool,
@@ -204,6 +242,9 @@ impl SynthetrixApp {
             covers_pool,
             tab: Tab::Dashboard,
             project_info: None,
+            forge_ui: ForgeUi::default(),
+            forge_jobs: Vec::new(),
+            forge_assets: Vec::new(),
             status: None,
             busy: false,
             sync: None,
@@ -284,6 +325,10 @@ impl SynthetrixApp {
                 Event::ProjectInfo(info) => {
                     self.project_info = Some(info);
                 }
+                Event::ForgeState { jobs, assets } => {
+                    self.forge_jobs = jobs;
+                    self.forge_assets = assets;
+                }
                 Event::Error(e) => {
                     let msg = format!("⚠ {e}");
                     self.log.push(msg.clone());
@@ -336,6 +381,7 @@ impl eframe::App for SynthetrixApp {
                 ui.heading("Synthetrix");
                 ui.separator();
                 ui.selectable_value(&mut self.tab, Tab::Dashboard, "▦ Dashboard");
+                ui.selectable_value(&mut self.tab, Tab::Forge, "✦ Forge");
                 ui.selectable_value(&mut self.tab, Tab::Fetcher, "⬇ Fetcher");
                 ui.selectable_value(&mut self.tab, Tab::Picker, "☑ Picker");
                 ui.selectable_value(&mut self.tab, Tab::Manifest, "🗂 Manifest");
@@ -399,6 +445,7 @@ impl eframe::App for SynthetrixApp {
 
         egui::CentralPanel::default().show(ctx, |ui| match self.tab {
             Tab::Dashboard => crate::tabs::dashboard(self, ui),
+            Tab::Forge => crate::tabs::forge(self, ui),
             Tab::Fetcher => crate::tabs::fetcher(self, ui),
             Tab::Picker => crate::tabs::picker(self, ui),
             Tab::Manifest => crate::tabs::manifest(self, ui),

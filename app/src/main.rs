@@ -5,6 +5,7 @@
 #![allow(clippy::type_complexity, clippy::too_many_arguments)]
 
 mod app;
+mod backends;
 mod civitai;
 mod comfy;
 mod config;

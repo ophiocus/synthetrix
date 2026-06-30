@@ -78,6 +78,14 @@ pub struct Config {
     // Per-model example images pulled on download.
     pub per_model: u32,
     pub include_video: bool,
+
+    // Generation backends.
+    #[serde(default = "default_comfy_url")]
+    pub comfy_url: String, // local ComfyUI REST base
+}
+
+fn default_comfy_url() -> String {
+    "http://127.0.0.1:8188".into()
 }
 
 impl Default for Config {
@@ -111,6 +119,7 @@ impl Default for Config {
             nsfw: true,
             per_model: 20,
             include_video: true,
+            comfy_url: default_comfy_url(),
         }
     }
 }

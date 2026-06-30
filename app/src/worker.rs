@@ -1,6 +1,7 @@
 //! Background worker: owns the DB connection + CivitAI client off the UI thread.
 //! UI sends `Cmd`, worker streams back `Event`. One thread, serial execution.
 
+use crate::backends::{self, GenRequest};
 use crate::civitai::Client;
 use crate::config::{Config, Project};
 use crate::{db, pngmeta, project};
@@ -17,6 +18,13 @@ pub enum Cmd {
     Reconfigure(Config),
     /// Open an IP as the active project (opens its per-IP project.sqlite).
     SetProject(Project),
+    /// Forge: generate an image for the active IP (Phase 1).
+    Generate {
+        req: GenRequest,
+        entity: String,
+    },
+    /// Refresh the Forge tab's job + asset lists.
+    QueryForge,
     Sync,
     QueryPicks(db::PickFilter),
     QueryManifest,
@@ -50,6 +58,11 @@ pub enum Event {
     CoverFailed(i64),
     /// The active project was opened; carries its roots + dashboard counts.
     ProjectInfo(ProjectInfo),
+    /// Forge tab data: recent jobs + assets for the active IP.
+    ForgeState {
+        jobs: Vec<project::JobRow>,
+        assets: Vec<project::AssetRow>,
+    },
     Error(String),
 }
 
@@ -181,6 +194,7 @@ struct State {
     cfg: Config,
     conn: Option<rusqlite::Connection>,
     project_conn: Option<rusqlite::Connection>,
+    active_project: Option<Project>,
     client: Client,
     ctx: egui::Context,
     tx: Sender<Event>,
@@ -201,6 +215,7 @@ fn run(cfg: Config, ctx: egui::Context, cmd_rx: Receiver<Cmd>, tx: Sender<Event>
     let mut st = State {
         conn: db::open(&cfg.catalog_dir).ok(),
         project_conn: None,
+        active_project: None,
         client,
         cfg,
         ctx,
@@ -223,6 +238,8 @@ fn handle(st: &mut State, cmd: Cmd) {
             st.status("reconfigured");
         }
         Cmd::SetProject(p) => set_project(st, p),
+        Cmd::Generate { req, entity } => generate(st, req, entity),
+        Cmd::QueryForge => refresh_forge(st),
         Cmd::QueryPicks(f) => {
             if let Some(conn) = &st.conn {
                 match db::query_picks(conn, &f) {
@@ -282,27 +299,146 @@ fn refresh_manifest(st: &State) {
 /// Open an IP as the active project: open (or create) its project.sqlite and
 /// report its roots + counts to the dashboard.
 fn set_project(st: &mut State, p: Project) {
-    let db_path = p.project_db_path();
-    match project::open(&db_path, &p.name) {
+    match project::open(&p.project_db_path(), &p.name) {
         Ok(conn) => {
-            let stats = project::stats(&conn);
             st.project_conn = Some(conn);
-            st.emit(Event::ProjectInfo(ProjectInfo {
-                name: p.name.clone(),
-                lore_root: p.lore_root.clone(),
-                engine_root: p.engine_root.clone(),
-                db_path: db_path.to_string_lossy().into_owned(),
-                asset_vault: p.asset_vault_path().to_string_lossy().into_owned(),
-                lore_root_exists: Path::new(&p.lore_root).is_dir(),
-                stats,
-            }));
+            st.active_project = Some(p.clone());
+            emit_project_info(st);
+            refresh_forge(st);
             st.status(format!("project: {}", p.name));
         }
         Err(e) => {
             st.project_conn = None;
+            st.active_project = None;
             st.emit(Event::Error(format!("open project {}: {e}", p.name)));
         }
     }
+}
+
+/// (Re)emit the active project's roots + live counts to the dashboard.
+fn emit_project_info(st: &State) {
+    if let (Some(p), Some(c)) = (&st.active_project, &st.project_conn) {
+        st.emit(Event::ProjectInfo(ProjectInfo {
+            name: p.name.clone(),
+            lore_root: p.lore_root.clone(),
+            engine_root: p.engine_root.clone(),
+            db_path: p.project_db_path().to_string_lossy().into_owned(),
+            asset_vault: p.asset_vault_path().to_string_lossy().into_owned(),
+            lore_root_exists: Path::new(&p.lore_root).is_dir(),
+            stats: project::stats(c),
+        }));
+    }
+}
+
+fn refresh_forge(st: &State) {
+    if let Some(c) = &st.project_conn {
+        st.emit(Event::ForgeState {
+            jobs: project::recent_jobs(c, 50),
+            assets: project::recent_assets(c, 50),
+        });
+    }
+}
+
+/// Phase-1 forge: text→image for the active IP via the local ComfyUI backend.
+/// Saves to the IP asset vault, writes a provenance sidecar, registers the asset
+/// + job in project.sqlite.
+fn generate(st: &mut State, req: GenRequest, entity: String) {
+    let Some(project) = st.active_project.clone() else {
+        st.emit(Event::Error("no project open — pick an IP first".into()));
+        return;
+    };
+    if st.project_conn.is_none() {
+        st.emit(Event::Error("project DB not open".into()));
+        return;
+    }
+    let params = serde_json::to_string(&serde_json::json!({
+        "model": req.model, "negative": req.negative, "width": req.width,
+        "height": req.height, "steps": req.steps, "cfg": req.cfg,
+        "sampler": req.sampler, "scheduler": req.scheduler, "seed": req.seed
+    }))
+    .unwrap_or_default();
+    let ent = if entity.trim().is_empty() {
+        "untitled".to_string()
+    } else {
+        entity.trim().to_string()
+    };
+    let mut backend = backends::backend_for("comfy_local", &st.cfg.comfy_url);
+    let job_id = match &st.project_conn {
+        Some(c) => project::insert_job(c, "image", backend.id(), &ent, &req.prompt, &params),
+        None => 0,
+    };
+    refresh_forge(st);
+    st.emit(Event::Busy(true));
+    let ctx = st.ctx.clone();
+    let tx = st.tx.clone();
+    let res = backend.generate_image(&req, &mut |frac, note| {
+        let _ = tx.send(Event::Status(format!("forge: {note} {:.0}%", frac * 100.0)));
+        ctx.request_repaint();
+    });
+    st.emit(Event::Busy(false));
+
+    match res {
+        Ok(gen) => {
+            let ext = match gen.content_type.as_str() {
+                "image/jpeg" => "jpg",
+                "image/webp" => "webp",
+                _ => "png",
+            };
+            let dir = project.asset_vault_path().join("images");
+            let _ = std::fs::create_dir_all(&dir);
+            let stem = format!("{ent}_{job_id}");
+            let path = dir.join(format!("{stem}.{ext}"));
+            if let Err(e) = std::fs::write(&path, &gen.bytes) {
+                if let Some(c) = &st.project_conn {
+                    project::update_job(c, job_id, "failed", None, &format!("write: {e}"));
+                }
+                st.emit(Event::Error(format!("forge save: {e}")));
+                refresh_forge(st);
+                return;
+            }
+            let _ = std::fs::write(
+                dir.join(format!("{stem}.json")),
+                serde_json::to_string_pretty(&gen.meta).unwrap_or_default(),
+            );
+            let sha = sha256_bytes(&gen.bytes);
+            let pstr = path.to_string_lossy().into_owned();
+            if let Some(c) = &st.project_conn {
+                project::insert_asset(
+                    c,
+                    "image",
+                    &format!("{stem}.{ext}"),
+                    &ent,
+                    &gen.content_type,
+                    &pstr,
+                    &sha,
+                    &gen.meta.to_string(),
+                    job_id,
+                );
+                project::update_job(
+                    c,
+                    job_id,
+                    "done",
+                    Some(&pstr),
+                    &format!("seed {}", gen.seed),
+                );
+            }
+            st.status(format!("forge: saved {stem}.{ext} (seed {})", gen.seed));
+        }
+        Err(e) => {
+            if let Some(c) = &st.project_conn {
+                project::update_job(c, job_id, "failed", None, &e);
+            }
+            st.emit(Event::Error(format!("forge: {e}")));
+        }
+    }
+    refresh_forge(st);
+    emit_project_info(st);
+}
+
+fn sha256_bytes(bytes: &[u8]) -> String {
+    let mut h = Sha256::new();
+    h.update(bytes);
+    format!("{:x}", h.finalize())
 }
 
 const QUERIES: [(&str, &str); 3] = [
