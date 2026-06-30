@@ -6,6 +6,7 @@
 
 mod app;
 mod civitai;
+mod comfy;
 mod config;
 mod convert;
 mod db;

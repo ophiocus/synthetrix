@@ -10,9 +10,17 @@ app's runtime version is derived from the latest `v*` git tag (`app/build.rs` �
 ## [Unreleased]
 
 ### Added
-- **"Open workflow in ComfyUI"** button in the silverbox status bar — copies the
-  workflow JSON and opens ComfyUI (`http://127.0.0.1:8188`); paste (Ctrl+V) there
-  to load the graph. Disabled when the image has no workflow.
+- **"Open workflow in ComfyUI"** button in the silverbox status bar — *programmatically*
+  loads the image's workflow into the running ComfyUI (no copy/paste). It ensures the
+  PNG carries the workflow (embeds a `tEXt` chunk if missing), uploads it via
+  `POST /upload/image`, and opens `…/?synflow=…`, which the bundled frontend bridge
+  feeds to ComfyUI's own `app.handleFile` — the same path as dragging the image onto
+  the canvas. Disabled when the image has no workflow.
+- **ComfyUI frontend bridge** (`comfyui/synthetrix_open.js`) — reads `?synflow=`,
+  fetches the uploaded image, and calls `handleFile` to drop it onto the canvas.
+  Loads even under `--disable-all-custom-nodes`; no server restart.
+- `pngmeta::insert_text_chunk` + `has_embedded_workflow` (PNG `tEXt` writer with
+  CRC-32, round-trip tested); new `comfy` module (embed → upload → open).
 
 ## [0.1.1] - 2026-06-29
 
