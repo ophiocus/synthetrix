@@ -57,9 +57,7 @@ impl Client {
     fn get_json(&mut self, url: &str, query: &[(&str, String)]) -> Result<Value, String> {
         for attempt in 0..self.max_retries {
             self.throttle();
-            let resp = self
-                .auth(self.http.get(url).query(query))
-                .send();
+            let resp = self.auth(self.http.get(url).query(query)).send();
             match resp {
                 Ok(r) => {
                     let code = r.status().as_u16();
@@ -220,7 +218,9 @@ impl Client {
             };
             let code = r.status().as_u16();
             if code == 429 || code >= 500 {
-                let wait = retry_after(&r).unwrap_or_else(|| 2u64.pow(attempt + 1)).min(60);
+                let wait = retry_after(&r)
+                    .unwrap_or_else(|| 2u64.pow(attempt + 1))
+                    .min(60);
                 std::thread::sleep(Duration::from_secs(wait));
                 continue;
             }
@@ -297,7 +297,9 @@ mod net_probe {
         std::env::var("CIVITAI_TOKEN").ok().or_else(|| {
             std::fs::read_to_string("../.env").ok().and_then(|s| {
                 s.lines().find_map(|l| {
-                    l.trim().strip_prefix("CIVITAI_TOKEN=").map(|x| x.trim().to_string())
+                    l.trim()
+                        .strip_prefix("CIVITAI_TOKEN=")
+                        .map(|x| x.trim().to_string())
                 })
             })
         })
@@ -310,10 +312,22 @@ mod net_probe {
         println!("token present: {}", tok.is_some());
         let mut c = Client::new(tok);
         let t = Instant::now();
-        let r = c.models_page("Checkpoint", "Flux.1 D", "Most Downloaded", "AllTime", true, 5, None);
+        let r = c.models_page(
+            "Checkpoint",
+            "Flux.1 D",
+            "Most Downloaded",
+            "AllTime",
+            true,
+            5,
+            None,
+        );
         println!("models_page elapsed: {:?}", t.elapsed());
         match r {
-            Ok(p) => println!("OK items={} next_cursor={}", p.items.len(), p.next_cursor.is_some()),
+            Ok(p) => println!(
+                "OK items={} next_cursor={}",
+                p.items.len(),
+                p.next_cursor.is_some()
+            ),
             Err(e) => println!("ERR {e}"),
         }
     }

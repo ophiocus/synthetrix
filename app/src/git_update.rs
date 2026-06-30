@@ -40,20 +40,28 @@ pub fn check_latest_release() -> Option<UpdateAvailable> {
         .timeout(std::time::Duration::from_secs(10))
         .build()
         .ok()?;
-    let url = format!("https://api.github.com/repos/{}/releases/latest", crate::APP_GH_REPO);
+    let url = format!(
+        "https://api.github.com/repos/{}/releases/latest",
+        crate::APP_GH_REPO
+    );
     let resp: serde_json::Value = client.get(url).send().ok()?.json().ok()?;
-    let tag = resp["tag_name"].as_str()?.trim_start_matches('v').to_string();
+    let tag = resp["tag_name"]
+        .as_str()?
+        .trim_start_matches('v')
+        .to_string();
     if !is_newer(&tag, env!("APP_VERSION")) {
         return None;
     }
     let dl = resp["assets"]
         .as_array()?
         .iter()
-        .find(|a| a["name"].as_str().unwrap_or("").ends_with(".msi"))?
-        ["browser_download_url"]
+        .find(|a| a["name"].as_str().unwrap_or("").ends_with(".msi"))?["browser_download_url"]
         .as_str()?
         .to_string();
-    Some(UpdateAvailable { version: tag, url: dl })
+    Some(UpdateAvailable {
+        version: tag,
+        url: dl,
+    })
 }
 
 fn download_and_install(url: &str, version: &str) -> Result<PathBuf, String> {

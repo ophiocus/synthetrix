@@ -105,7 +105,9 @@ pub fn upsert_model(conn: &Connection, m: &Value) -> Result<(), String> {
             s(m, "name"),
             s(m, "type"),
             m.get("nsfw").and_then(|x| x.as_bool()).unwrap_or(false) as i64,
-            m.get("creator").and_then(|c| c.get("username")).and_then(|u| u.as_str()),
+            m.get("creator")
+                .and_then(|c| c.get("username"))
+                .and_then(|u| u.as_str()),
             m.get("tags").map(|t| t.to_string()),
             stats.get("downloadCount").and_then(|x| x.as_i64()),
             stats.get("rating").and_then(|x| x.as_f64()),
@@ -132,7 +134,8 @@ pub fn upsert_model(conn: &Connection, m: &Value) -> Result<(), String> {
                     version_idx=excluded.version_idx, trained_words=excluded.trained_words,
                     description=excluded.description, downloads=excluded.downloads",
                 params![
-                    vid, id,
+                    vid,
+                    id,
                     s(v, "name"),
                     s(v, "baseModel"),
                     s(v, "publishedAt"),
@@ -160,7 +163,8 @@ pub fn upsert_model(conn: &Connection, m: &Value) -> Result<(), String> {
                             download_url=excluded.download_url, size_kb=excluded.size_kb,
                             sha256=excluded.sha256",
                         params![
-                            fid, vid,
+                            fid,
+                            vid,
                             s(f, "name"),
                             s(f, "type"),
                             f.get("sizeKB").and_then(|x| x.as_f64()),
@@ -181,9 +185,11 @@ pub fn upsert_model(conn: &Connection, m: &Value) -> Result<(), String> {
 }
 
 pub fn model_raw(conn: &Connection, model_id: i64) -> Option<Value> {
-    conn.query_row("SELECT raw FROM models WHERE model_id=?1", [model_id], |r| {
-        r.get::<_, String>(0)
-    })
+    conn.query_row(
+        "SELECT raw FROM models WHERE model_id=?1",
+        [model_id],
+        |r| r.get::<_, String>(0),
+    )
     .ok()
     .and_then(|s| serde_json::from_str(&s).ok())
 }
@@ -232,7 +238,10 @@ pub fn query_picks(conn: &Connection, f: &PickFilter) -> Result<Vec<PickRow>, St
         sql.push_str(&format!(" AND m.type='{}'", t.replace('\'', "''")));
     }
     if let Some(b) = &f.base {
-        sql.push_str(&format!(" AND v.base_model LIKE '%{}%'", b.replace('\'', "''")));
+        sql.push_str(&format!(
+            " AND v.base_model LIKE '%{}%'",
+            b.replace('\'', "''")
+        ));
     }
     if let Some(q) = &f.search {
         sql.push_str(&format!(" AND m.name LIKE '%{}%'", q.replace('\'', "''")));
@@ -266,13 +275,16 @@ pub fn query_picks(conn: &Connection, f: &PickFilter) -> Result<Vec<PickRow>, St
                 thumbs_up: r.get::<_, Option<i64>>(7)?.unwrap_or(0),
                 size_kb: r.get::<_, Option<f64>>(8)?.unwrap_or(0.0),
                 trained_words: r.get::<_, Option<String>>(9)?.unwrap_or_default(),
-                status: r.get::<_, Option<String>>(10)?.unwrap_or_else(|| "indexed".into()),
+                status: r
+                    .get::<_, Option<String>>(10)?
+                    .unwrap_or_else(|| "indexed".into()),
                 locked: r.get::<_, i64>(11)? != 0,
                 cover_url: r.get::<_, Option<String>>(12)?,
             })
         })
         .map_err(|e| e.to_string())?;
-    rows.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())
+    rows.collect::<Result<Vec<_>, _>>()
+        .map_err(|e| e.to_string())
 }
 
 // ---- Manifest --------------------------------------------------------------
@@ -315,12 +327,15 @@ pub fn query_manifest(conn: &Connection) -> Result<Vec<ManifestRow>, String> {
                 sha256: r.get(6)?,
                 local_path: r.get(7)?,
                 nvme_path: r.get(8)?,
-                status: r.get::<_, Option<String>>(9)?.unwrap_or_else(|| "indexed".into()),
+                status: r
+                    .get::<_, Option<String>>(9)?
+                    .unwrap_or_else(|| "indexed".into()),
                 locked: r.get::<_, i64>(10)? != 0,
             })
         })
         .map_err(|e| e.to_string())?;
-    rows.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())
+    rows.collect::<Result<Vec<_>, _>>()
+        .map_err(|e| e.to_string())
 }
 
 /// Distinct model ids that have at least one downloaded/promoted file.
@@ -369,7 +384,9 @@ pub fn file_row(conn: &Connection, file_id: i64) -> Option<ManifestRow> {
                 sha256: r.get(6)?,
                 local_path: r.get(7)?,
                 nvme_path: r.get(8)?,
-                status: r.get::<_, Option<String>>(9)?.unwrap_or_else(|| "indexed".into()),
+                status: r
+                    .get::<_, Option<String>>(9)?
+                    .unwrap_or_else(|| "indexed".into()),
                 locked: r.get::<_, i64>(10)? != 0,
             })
         },
@@ -438,8 +455,18 @@ pub fn record_image(
             workflow_path=excluded.workflow_path, params_path=excluded.params_path,
             has_workflow=excluded.has_workflow, status='saved'",
         params![
-            image_id, model_id, url, media_type, nsfw_level, width, height,
-            local_path, workflow_path, params_path, has_workflow as i64, is_starter as i64
+            image_id,
+            model_id,
+            url,
+            media_type,
+            nsfw_level,
+            width,
+            height,
+            local_path,
+            workflow_path,
+            params_path,
+            has_workflow as i64,
+            is_starter as i64
         ],
     );
 }
@@ -502,8 +529,10 @@ pub fn audit(conn: &Connection, vault_root: &str) -> Result<AuditReport, String>
                     let p = e.path();
                     if p.is_file() {
                         let ext = p.extension().and_then(|x| x.to_str()).unwrap_or("");
-                        if matches!(ext, "safetensors" | "ckpt" | "pt" | "bin" | "pth" | "gguf" | "sft")
-                            && !known.contains(&p)
+                        if matches!(
+                            ext,
+                            "safetensors" | "ckpt" | "pt" | "bin" | "pth" | "gguf" | "sft"
+                        ) && !known.contains(&p)
                         {
                             rep.orphans.push(p.to_string_lossy().into_owned());
                         }
@@ -518,8 +547,8 @@ pub fn audit(conn: &Connection, vault_root: &str) -> Result<AuditReport, String>
 /// Outcome of a heal pass.
 #[derive(Clone, Default)]
 pub struct HealReport {
-    pub reset: usize,    // rows whose vanished file was reset for re-fetch
-    pub adopted: usize,  // orphan files on disk matched into the manifest
+    pub reset: usize,     // rows whose vanished file was reset for re-fetch
+    pub adopted: usize,   // orphan files on disk matched into the manifest
     pub unmatched: usize, // orphans with no catalog match (still orphans)
 }
 
@@ -536,7 +565,13 @@ pub fn heal(conn: &Connection, rep: &AuditReport) -> HealReport {
              WHERE file_id=?1",
             [fid],
         );
-        log(conn, *fid, 0, "heal", "vault file missing -> reset to indexed");
+        log(
+            conn,
+            *fid,
+            0,
+            "heal",
+            "vault file missing -> reset to indexed",
+        );
         out.reset += 1;
     }
     for (fid, _) in &rep.missing_nvme {
@@ -544,7 +579,13 @@ pub fn heal(conn: &Connection, rep: &AuditReport) -> HealReport {
             "UPDATE files SET status='downloaded', nvme_path=NULL WHERE file_id=?1",
             [fid],
         );
-        log(conn, *fid, 0, "heal", "nvme replica missing -> demote to downloaded");
+        log(
+            conn,
+            *fid,
+            0,
+            "heal",
+            "nvme replica missing -> demote to downloaded",
+        );
         out.reset += 1;
     }
     for orphan in &rep.orphans {
@@ -607,7 +648,14 @@ mod tests {
         });
         upsert_model(&conn, &model).unwrap();
 
-        let rows = query_picks(&conn, &PickFilter { limit: 50, ..Default::default() }).unwrap();
+        let rows = query_picks(
+            &conn,
+            &PickFilter {
+                limit: 50,
+                ..Default::default()
+            },
+        )
+        .unwrap();
         assert_eq!(rows.len(), 1);
         let r = &rows[0];
         assert_eq!(r.file_id, 555);
@@ -619,7 +667,12 @@ mod tests {
 
         // state transitions reflected in manifest. The catalog hash (ABCDEF)
         // is authoritative; set_downloaded only fills it when previously empty.
-        set_downloaded(&conn, 555, "H:/Models/checkpoints/test.safetensors", "abcdef");
+        set_downloaded(
+            &conn,
+            555,
+            "H:/Models/checkpoints/test.safetensors",
+            "abcdef",
+        );
         set_promoted(&conn, 555, "E:/.../test.safetensors");
         set_locked(&conn, 555, true);
         let man = query_manifest(&conn).unwrap();

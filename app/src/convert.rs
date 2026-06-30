@@ -15,7 +15,7 @@ pub struct Recipe {
     pub negative: String,
     pub steps: Option<i64>,
     pub cfg: Option<f64>,
-    pub sampler: Option<String>,   // ComfyUI sampler name (euler, dpmpp_2m…)
+    pub sampler: Option<String>, // ComfyUI sampler name (euler, dpmpp_2m…)
     pub scheduler: Option<String>, // normal | karras | …
     pub seed: Option<i64>,
     pub width: Option<i64>,
@@ -46,8 +46,16 @@ fn recipe_from_api(v: &Value) -> Recipe {
         Some(o) => o,
         None => return r,
     };
-    let class = |id: &str| obj.get(id).and_then(|n| n.get("class_type")).and_then(|c| c.as_str());
-    let inputs = |id: &str| obj.get(id).and_then(|n| n.get("inputs")).and_then(|i| i.as_object());
+    let class = |id: &str| {
+        obj.get(id)
+            .and_then(|n| n.get("class_type"))
+            .and_then(|c| c.as_str())
+    };
+    let inputs = |id: &str| {
+        obj.get(id)
+            .and_then(|n| n.get("inputs"))
+            .and_then(|i| i.as_object())
+    };
     let link_src = |node: &Map<String, Value>, name: &str| -> Option<String> {
         node.get(name)
             .and_then(|x| x.as_array())
@@ -74,14 +82,25 @@ fn recipe_from_api(v: &Value) -> Recipe {
     };
 
     // find a sampler node
-    let sampler_id = obj.keys().find(|k| class(k).map_or(false, |c| c.contains("KSampler")));
+    let sampler_id = obj
+        .keys()
+        .find(|k| class(k).is_some_and(|c| c.contains("KSampler")));
     if let Some(sid) = sampler_id {
         if let Some(ins) = inputs(sid) {
-            r.seed = ins.get("seed").or_else(|| ins.get("noise_seed")).and_then(|x| x.as_i64());
+            r.seed = ins
+                .get("seed")
+                .or_else(|| ins.get("noise_seed"))
+                .and_then(|x| x.as_i64());
             r.steps = ins.get("steps").and_then(|x| x.as_i64());
             r.cfg = ins.get("cfg").and_then(num);
-            r.sampler = ins.get("sampler_name").and_then(|x| x.as_str()).map(String::from);
-            r.scheduler = ins.get("scheduler").and_then(|x| x.as_str()).map(String::from);
+            r.sampler = ins
+                .get("sampler_name")
+                .and_then(|x| x.as_str())
+                .map(String::from);
+            r.scheduler = ins
+                .get("scheduler")
+                .and_then(|x| x.as_str())
+                .map(String::from);
             if let Some(src) = link_src(ins, "positive") {
                 r.positive = text_of(&src).unwrap_or_default();
             }
@@ -96,21 +115,29 @@ fn recipe_from_api(v: &Value) -> Recipe {
             Some(c) if c.contains("CheckpointLoader") => {
                 if let Some(ins) = inputs(id) {
                     r.model = r.model.take().or_else(|| {
-                        ins.get("ckpt_name").and_then(|x| x.as_str()).map(String::from)
+                        ins.get("ckpt_name")
+                            .and_then(|x| x.as_str())
+                            .map(String::from)
                     });
                 }
             }
             Some("UNETLoader") => {
                 if let Some(ins) = inputs(id) {
                     r.model = r.model.take().or_else(|| {
-                        ins.get("unet_name").and_then(|x| x.as_str()).map(String::from)
+                        ins.get("unet_name")
+                            .and_then(|x| x.as_str())
+                            .map(String::from)
                     });
                 }
             }
             Some(c) if c.starts_with("Empty") && c.contains("Latent") => {
                 if let Some(ins) = inputs(id) {
-                    r.width = r.width.or_else(|| ins.get("width").and_then(|x| x.as_i64()));
-                    r.height = r.height.or_else(|| ins.get("height").and_then(|x| x.as_i64()));
+                    r.width = r
+                        .width
+                        .or_else(|| ins.get("width").and_then(|x| x.as_i64()));
+                    r.height = r
+                        .height
+                        .or_else(|| ins.get("height").and_then(|x| x.as_i64()));
                 }
             }
             _ => {}
@@ -126,8 +153,18 @@ fn recipe_from_ui(v: &Value) -> Recipe {
         Some(n) => n,
         None => return r,
     };
-    let ntype = |n: &Value| n.get("type").and_then(|t| t.as_str()).unwrap_or("").to_string();
-    let wv = |n: &Value| n.get("widgets_values").and_then(|w| w.as_array()).cloned().unwrap_or_default();
+    let ntype = |n: &Value| {
+        n.get("type")
+            .and_then(|t| t.as_str())
+            .unwrap_or("")
+            .to_string()
+    };
+    let wv = |n: &Value| {
+        n.get("widgets_values")
+            .and_then(|w| w.as_array())
+            .cloned()
+            .unwrap_or_default()
+    };
 
     // KSampler widget order: [seed, control_after_generate, steps, cfg, sampler, scheduler, denoise]
     if let Some(k) = nodes.iter().find(|n| ntype(n).contains("KSampler")) {
@@ -144,7 +181,10 @@ fn recipe_from_ui(v: &Value) -> Recipe {
         r.model = wv(c).first().and_then(|x| x.as_str()).map(String::from);
     }
     // latent size
-    if let Some(l) = nodes.iter().find(|n| ntype(n).starts_with("Empty") && ntype(n).contains("Latent")) {
+    if let Some(l) = nodes
+        .iter()
+        .find(|n| ntype(n).starts_with("Empty") && ntype(n).contains("Latent"))
+    {
         let w = wv(l);
         r.width = w.first().and_then(|x| x.as_i64());
         r.height = w.get(1).and_then(|x| x.as_i64());
@@ -232,7 +272,10 @@ fn format_a1111(r: &Recipe) -> String {
 pub fn params_to_workflow(params: &str) -> Option<String> {
     let r = parse_a1111(params);
     let (sampler, scheduler) = match &r.sampler {
-        Some(s) => (s.clone(), r.scheduler.clone().unwrap_or_else(|| "normal".into())),
+        Some(s) => (
+            s.clone(),
+            r.scheduler.clone().unwrap_or_else(|| "normal".into()),
+        ),
         None => ("euler".into(), "normal".into()),
     };
     let graph = json!({
@@ -299,7 +342,12 @@ fn parse_a1111(text: &str) -> Recipe {
 /// Map an A1111 sampler label to a (comfy_sampler, scheduler) pair.
 fn normalize_sampler(a: &str) -> (String, String) {
     let low = a.to_lowercase();
-    let scheduler = if low.contains("karras") { "karras" } else { "normal" }.to_string();
+    let scheduler = if low.contains("karras") {
+        "karras"
+    } else {
+        "normal"
+    }
+    .to_string();
     let sampler = if low.contains("dpm++ 2m sde") || low.contains("dpmpp_2m_sde") {
         "dpmpp_2m_sde"
     } else if low.contains("dpm++ 2m") || low.contains("dpmpp_2m") {

@@ -1,4 +1,8 @@
 #![windows_subsystem = "windows"]
+// UI action buffers and DB-row constructors legitimately carry wide tuples /
+// argument lists; allow those two style lints crate-wide so the strict
+// `-D warnings` CI gate still polices everything else.
+#![allow(clippy::type_complexity, clippy::too_many_arguments)]
 
 mod app;
 mod civitai;

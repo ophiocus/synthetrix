@@ -44,7 +44,11 @@ pub struct WfView {
 
 impl Default for WfView {
     fn default() -> Self {
-        Self { pan: egui::vec2(0.0, 0.0), zoom: 0.6, fitted: false }
+        Self {
+            pan: egui::vec2(0.0, 0.0),
+            zoom: 0.6,
+            fitted: false,
+        }
     }
 }
 
@@ -140,7 +144,15 @@ fn parse_ui(v: &Value) -> WGraph {
                 outputs.len(),
                 widgets.len(),
             );
-            nodes.push(WNode { id, title, pos, size, inputs, outputs, widgets });
+            nodes.push(WNode {
+                id,
+                title,
+                pos,
+                size,
+                inputs,
+                outputs,
+                widgets,
+            });
         }
     }
     let mut links = Vec::new();
@@ -164,18 +176,32 @@ fn parse_ui(v: &Value) -> WGraph {
 fn parse_api(v: &Value) -> WGraph {
     let obj = match v.as_object() {
         Some(o) => o,
-        None => return WGraph { nodes: vec![], links: vec![] },
+        None => {
+            return WGraph {
+                nodes: vec![],
+                links: vec![],
+            }
+        }
     };
-    let entries: Vec<(&String, &Value)> =
-        obj.iter().filter(|(_, n)| n.get("class_type").is_some()).collect();
-    let key_id: HashMap<String, i64> =
-        entries.iter().enumerate().map(|(i, (k, _))| ((*k).clone(), i as i64)).collect();
+    let entries: Vec<(&String, &Value)> = obj
+        .iter()
+        .filter(|(_, n)| n.get("class_type").is_some())
+        .collect();
+    let key_id: HashMap<String, i64> = entries
+        .iter()
+        .enumerate()
+        .map(|(i, (k, _))| ((*k).clone(), i as i64))
+        .collect();
 
     let mut links = Vec::new();
     let mut tmp: Vec<(i64, String, Vec<String>, Vec<String>)> = Vec::new();
     for (k, n) in &entries {
         let id = key_id[*k];
-        let title = n.get("class_type").and_then(|x| x.as_str()).unwrap_or("node").to_string();
+        let title = n
+            .get("class_type")
+            .and_then(|x| x.as_str())
+            .unwrap_or("node")
+            .to_string();
         let mut slot_inputs = Vec::new();
         let mut widgets = Vec::new();
         if let Some(io) = n.get("inputs").and_then(|x| x.as_object()) {
@@ -219,7 +245,12 @@ fn parse_api(v: &Value) -> WGraph {
         memo.insert(id, 0); // cycle guard
         let d = parents
             .get(&id)
-            .map(|ps| ps.iter().map(|p| depth(*p, parents, memo) + 1).max().unwrap_or(0))
+            .map(|ps| {
+                ps.iter()
+                    .map(|p| depth(*p, parents, memo) + 1)
+                    .max()
+                    .unwrap_or(0)
+            })
             .unwrap_or(0);
         memo.insert(id, d);
         d
@@ -242,8 +273,21 @@ fn parse_api(v: &Value) -> WGraph {
         let pos = egui::vec2(d as f32 * 320.0, row as f32 * 190.0);
         let outs = out_slots.get(&id).copied().unwrap_or(1);
         let outputs: Vec<String> = (0..outs).map(|i| format!("out{i}")).collect();
-        let size = fit_size(egui::vec2(200.0, 100.0), inputs.len(), outputs.len(), widgets.len());
-        nodes.push(WNode { id, title, pos, size, inputs, outputs, widgets });
+        let size = fit_size(
+            egui::vec2(200.0, 100.0),
+            inputs.len(),
+            outputs.len(),
+            widgets.len(),
+        );
+        nodes.push(WNode {
+            id,
+            title,
+            pos,
+            size,
+            inputs,
+            outputs,
+            widgets,
+        });
     }
     WGraph { nodes, links }
 }
@@ -269,8 +313,9 @@ pub fn show(ui: &mut egui::Ui, g: &WGraph, view: &mut WfView) {
             max = max.max(n.pos + n.size);
         }
         let span = (max - min).max(egui::vec2(1.0, 1.0));
-        view.zoom =
-            (rect.width() / (span.x + 80.0)).min(rect.height() / (span.y + 80.0)).clamp(0.05, 1.5);
+        view.zoom = (rect.width() / (span.x + 80.0))
+            .min(rect.height() / (span.y + 80.0))
+            .clamp(0.05, 1.5);
         view.pan = min - egui::vec2(40.0, 40.0);
         view.fitted = true;
     }
@@ -302,12 +347,7 @@ pub fn show(ui: &mut egui::Ui, g: &WGraph, view: &mut WfView) {
             let p0 = tf(out_slot(a, l.from_slot));
             let p1 = tf(in_slot(b, l.to_slot));
             let dx = ((p1.x - p0.x).abs() * 0.5).max(30.0);
-            let pts = [
-                p0,
-                p0 + egui::vec2(dx, 0.0),
-                p1 - egui::vec2(dx, 0.0),
-                p1,
-            ];
+            let pts = [p0, p0 + egui::vec2(dx, 0.0), p1 - egui::vec2(dx, 0.0), p1];
             clip.add(CubicBezierShape::from_points_stroke(
                 pts,
                 false,
@@ -322,7 +362,11 @@ pub fn show(ui: &mut egui::Ui, g: &WGraph, view: &mut WfView) {
         let p = tf(n.pos);
         let nrect = egui::Rect::from_min_size(p, n.size * z);
         clip.rect_filled(nrect, 4.0, egui::Color32::from_gray(42));
-        clip.rect_stroke(nrect, 4.0, egui::Stroke::new(1.0, egui::Color32::from_gray(80)));
+        clip.rect_stroke(
+            nrect,
+            4.0,
+            egui::Stroke::new(1.0, egui::Color32::from_gray(80)),
+        );
         let tbar = egui::Rect::from_min_size(p, egui::vec2(n.size.x * z, TITLE_H * z));
         clip.rect_filled(tbar, 4.0, egui::Color32::from_rgb(58, 70, 96));
         clip.text(

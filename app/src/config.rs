@@ -43,7 +43,12 @@ impl Default for Config {
                 .map(|s| s.to_string())
                 .collect(),
             base_models: [
-                "Flux.1 D", "Flux.1 S", "SDXL 1.0", "Pony", "Illustrious", "SD 1.5",
+                "Flux.1 D",
+                "Flux.1 S",
+                "SDXL 1.0",
+                "Pony",
+                "Illustrious",
+                "SD 1.5",
             ]
             .iter()
             .map(|s| s.to_string())
@@ -90,7 +95,9 @@ impl Config {
         if !self.token.trim().is_empty() {
             Some(self.token.trim().to_string())
         } else {
-            std::env::var("CIVITAI_TOKEN").ok().filter(|s| !s.is_empty())
+            std::env::var("CIVITAI_TOKEN")
+                .ok()
+                .filter(|s| !s.is_empty())
         }
     }
 

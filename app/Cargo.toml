@@ -1,6 +1,6 @@
 [package]
 name = "synthetrix"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2021"
 authors = ["ophiocus <csantanad@gmail.com>"]
 description = "CivitAI checkpoint/LoRA harvester: fetch, pick, manifest with NVMe hotload"

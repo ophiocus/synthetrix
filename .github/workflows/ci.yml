@@ -1,0 +1,61 @@
+# CI — gates only (fmt / clippy / test). No build artefacts, no MSI.
+#
+# Mirrors the TinyBooth pattern: run the same gates release.yml runs at
+# tag-time, but on every push/PR so toolchain or lint drift surfaces at edit
+# time instead of burning a version number at ship time.
+#
+# KEEP IN SYNC WITH release.yml:
+#   1. toolchain pin (dtolnay/rust-toolchain@<X.Y.Z>) — same version in both.
+#   2. components: rustfmt, clippy.
+#   3. gate command list: fmt --check, clippy -D warnings, test.
+# The pin matches the local toolchain the gates were verified on (1.93.1);
+# bump both files together, intentionally.
+#
+# The crate lives in app/, so every cargo step runs there (defaults.run).
+
+name: CI
+
+on:
+  pull_request:
+    branches: [master]
+    paths-ignore: ['**.md', 'docs/**', '.gitignore']
+  push:
+    branches: [master]
+    paths-ignore: ['**.md', 'docs/**', '.gitignore']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    working-directory: app
+
+jobs:
+  gates:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      # KEEP IN SYNC WITH release.yml: toolchain pin + components.
+      - uses: dtolnay/rust-toolchain@1.93.1
+        with:
+          components: rustfmt, clippy
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: app
+
+      # KEEP IN SYNC WITH release.yml: gate command list.
+      - name: cargo fmt --check
+        run: cargo fmt --check
+
+      - name: cargo clippy
+        run: cargo clippy --release --all-targets -- -D warnings
+
+      - name: cargo test
+        run: cargo test --release

@@ -1,7 +1,7 @@
 use crate::config::Config;
 use crate::db;
 use crate::git_update::UpdateState;
-use crate::worker::{CoverFetcher, Cmd, Event, Worker};
+use crate::worker::{Cmd, CoverFetcher, Event, Worker};
 use eframe::egui;
 use std::collections::HashSet;
 use std::sync::mpsc;
@@ -75,13 +75,21 @@ impl Lightbox {
         use std::path::Path;
         let p = Path::new(image_path);
         let dir = p.parent().map(|d| d.to_path_buf()).unwrap_or_default();
-        let stem = p.file_stem().and_then(|s| s.to_str()).unwrap_or("img").to_string();
+        let stem = p
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("img")
+            .to_string();
         let mut wf_path = wf;
         let mut pr_path = pr;
         let mut note = None;
 
-        let wf_text0 = wf_path.as_ref().and_then(|p| std::fs::read_to_string(p).ok());
-        let pr_text0 = pr_path.as_ref().and_then(|p| std::fs::read_to_string(p).ok());
+        let wf_text0 = wf_path
+            .as_ref()
+            .and_then(|p| std::fs::read_to_string(p).ok());
+        let pr_text0 = pr_path
+            .as_ref()
+            .and_then(|p| std::fs::read_to_string(p).ok());
 
         // synthesize + cache whichever side is missing
         let (wf_text, pr_text) = match (wf_text0, pr_text0) {
@@ -102,7 +110,8 @@ impl Lightbox {
                     let dst = dir.join(format!("{stem}.workflow.json"));
                     if std::fs::write(&dst, wtxt).is_ok() {
                         wf_path = Some(dst.to_string_lossy().into_owned());
-                        note = Some("Synthesized ComfyUI workflow from A1111 params (cached).".into());
+                        note =
+                            Some("Synthesized ComfyUI workflow from A1111 params (cached).".into());
                     }
                 }
                 (synth, Some(p))
@@ -149,7 +158,8 @@ pub struct SynthetrixApp {
     /// Manifest rows expanded to show their captured-image strip, + path cache.
     /// Each entry: (image_path, optional workflow.json, optional params.txt).
     pub manifest_expanded: std::collections::HashSet<i64>,
-    pub manifest_imgs: std::collections::HashMap<i64, Vec<(String, Option<String>, Option<String>)>>,
+    pub manifest_imgs:
+        std::collections::HashMap<i64, Vec<(String, Option<String>, Option<String>)>>,
     /// Full-size image + workflow/params overlay (the "silverbox").
     pub lightbox: Option<Lightbox>,
 
@@ -171,12 +181,8 @@ impl SynthetrixApp {
         egui_extras::install_image_loaders(&cc.egui_ctx);
 
         let worker = Worker::spawn(config.clone(), cc.egui_ctx.clone());
-        let covers_pool = CoverFetcher::spawn(
-            &config,
-            cc.egui_ctx.clone(),
-            worker.evt_tx.clone(),
-            6,
-        );
+        let covers_pool =
+            CoverFetcher::spawn(&config, cc.egui_ctx.clone(), worker.evt_tx.clone(), 6);
         let _ = worker.tx.send(Cmd::QueryManifest);
 
         let (tx, rx) = mpsc::channel();

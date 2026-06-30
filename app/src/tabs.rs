@@ -41,7 +41,11 @@ fn corner_badge(ui: &egui::Ui, rect: egui::Rect, color: egui::Color32, glyph: &s
 /// Sized placeholder while a cover is fetching or absent.
 fn cover_placeholder(ui: &mut egui::Ui, w: f32, h: f32, spinner: bool) {
     let (rect, _) = ui.allocate_exact_size(egui::vec2(w, h), egui::Sense::hover());
-    ui.painter().rect_filled(rect, egui::Rounding::same(4.0), egui::Color32::from_gray(38));
+    ui.painter().rect_filled(
+        rect,
+        egui::Rounding::same(4.0),
+        egui::Color32::from_gray(38),
+    );
     if spinner {
         ui.put(rect, egui::Spinner::new());
     }
@@ -72,7 +76,10 @@ pub fn fetcher(app: &mut SynthetrixApp, ui: &mut egui::Ui) {
         if has_token {
             ui.colored_label(egui::Color32::from_rgb(80, 200, 120), "✔ present");
         } else {
-            ui.colored_label(egui::Color32::from_rgb(240, 120, 120), "✘ missing — set it in Settings");
+            ui.colored_label(
+                egui::Color32::from_rgb(240, 120, 120),
+                "✘ missing — set it in Settings",
+            );
         }
         ui.separator();
         ui.weak(format!(
@@ -89,7 +96,9 @@ pub fn fetcher(app: &mut SynthetrixApp, ui: &mut egui::Ui) {
     ui.horizontal(|ui| {
         ui.add_enabled_ui(!app.busy && has_token, |ui| {
             if ui
-                .add(egui::Button::new("⬇  Sync from CivitAI Red").min_size(egui::vec2(220.0, 34.0)))
+                .add(
+                    egui::Button::new("⬇  Sync from CivitAI Red").min_size(egui::vec2(220.0, 34.0)),
+                )
                 .clicked()
             {
                 start = true;
@@ -104,7 +113,11 @@ pub fn fetcher(app: &mut SynthetrixApp, ui: &mut egui::Ui) {
     // --- live progress ---
     if let Some((done, total, rows, unique)) = app.sync {
         ui.add_space(8.0);
-        let frac = if total > 0 { done as f32 / total as f32 } else { 0.0 };
+        let frac = if total > 0 {
+            done as f32 / total as f32
+        } else {
+            0.0
+        };
         ui.add(
             egui::ProgressBar::new(frac)
                 .text(format!("{done}/{total} combos"))
@@ -186,12 +199,22 @@ pub fn picker(app: &mut SynthetrixApp, ui: &mut egui::Ui) {
             ui.separator();
             ui.label("Sort:");
             egui::ComboBox::from_id_source("sort_combo")
-                .selected_text(if pu.sort_idx == 1 { "👍 Likes" } else { "⬇ Downloads" })
+                .selected_text(if pu.sort_idx == 1 {
+                    "👍 Likes"
+                } else {
+                    "⬇ Downloads"
+                })
                 .show_ui(ui, |ui| {
-                    if ui.selectable_value(&mut pu.sort_idx, 0, "⬇ Downloads").clicked() {
+                    if ui
+                        .selectable_value(&mut pu.sort_idx, 0, "⬇ Downloads")
+                        .clicked()
+                    {
                         do_refresh = true;
                     }
-                    if ui.selectable_value(&mut pu.sort_idx, 1, "👍 Likes").clicked() {
+                    if ui
+                        .selectable_value(&mut pu.sort_idx, 1, "👍 Likes")
+                        .clicked()
+                    {
                         do_refresh = true;
                     }
                 });
@@ -218,7 +241,10 @@ pub fn picker(app: &mut SynthetrixApp, ui: &mut egui::Ui) {
         ui.separator();
         let en = sel_count > 0 && !app.busy;
         let per = app.config.per_model;
-        if ui.add_enabled(en, egui::Button::new("⬇ Download selected")).clicked() {
+        if ui
+            .add_enabled(en, egui::Button::new("⬇ Download selected"))
+            .clicked()
+        {
             for id in &app.selected {
                 cmds.borrow_mut().push(Cmd::Download {
                     file_id: *id,
@@ -277,9 +303,13 @@ pub fn picker(app: &mut SynthetrixApp, ui: &mut egui::Ui) {
                 if is_sel {
                     frame = frame.stroke(egui::Stroke::new(2.5, accent));
                 } else if active {
-                    frame = frame.stroke(egui::Stroke::new(1.5, egui::Color32::from_rgb(80, 200, 120)));
+                    frame = frame.stroke(egui::Stroke::new(
+                        1.5,
+                        egui::Color32::from_rgb(80, 200, 120),
+                    ));
                 } else if downloaded {
-                    frame = frame.stroke(egui::Stroke::new(1.0, egui::Color32::from_rgb(70, 150, 90)));
+                    frame =
+                        frame.stroke(egui::Stroke::new(1.0, egui::Color32::from_rgb(70, 150, 90)));
                 }
                 ui.allocate_ui(egui::vec2(card_w + 16.0, card_h), |ui| {
                     frame.show(ui, |ui| {
@@ -354,10 +384,8 @@ pub fn picker(app: &mut SynthetrixApp, ui: &mut egui::Ui) {
                             });
                             // --- title (truncated) + meta ---
                             ui.add(
-                                egui::Label::new(
-                                    egui::RichText::new(&row.model_name).strong(),
-                                )
-                                .truncate(),
+                                egui::Label::new(egui::RichText::new(&row.model_name).strong())
+                                    .truncate(),
                             )
                             .on_hover_text(format!(
                                 "{}\nhttps://civitai.com/models/{}",
@@ -441,7 +469,10 @@ pub fn picker(app: &mut SynthetrixApp, ui: &mut egui::Ui) {
             app.covers.insert(mid, CoverState::Ready(p));
         } else if let Some(u) = url {
             app.covers.insert(mid, CoverState::Requested);
-            let _ = app.covers_pool.tx.send(CoverReq { model_id: mid, url: u });
+            let _ = app.covers_pool.tx.send(CoverReq {
+                model_id: mid,
+                url: u,
+            });
         } else {
             app.covers.insert(mid, CoverState::Missing);
         }
@@ -537,14 +568,17 @@ pub fn manifest(app: &mut SynthetrixApp, ui: &mut egui::Ui) {
             if ui.button("↻ Refresh").clicked() {
                 do_refresh = true;
             }
-            if ui.add_enabled(!app.busy, egui::Button::new("🩺 Audit")).clicked() {
+            if ui
+                .add_enabled(!app.busy, egui::Button::new("🩺 Audit"))
+                .clicked()
+            {
                 do_audit = true;
             }
             if app.audit.is_some() && ui.button("🛠 Heal").clicked() {
                 do_heal = true;
             }
             // recover unmatched orphans by hash via CivitAI
-            let has_orphans = app.audit.as_ref().map_or(false, |a| !a.orphans.is_empty());
+            let has_orphans = app.audit.as_ref().is_some_and(|a| !a.orphans.is_empty());
             if ui
                 .add_enabled(!app.busy && has_orphans, egui::Button::new("🔍 Recover"))
                 .on_hover_text("Identify orphan files by hash via CivitAI and adopt matches")
@@ -562,7 +596,11 @@ pub fn manifest(app: &mut SynthetrixApp, ui: &mut egui::Ui) {
         });
     });
 
-    let active = app.manifest.iter().filter(|r| r.status == "promoted").count();
+    let active = app
+        .manifest
+        .iter()
+        .filter(|r| r.status == "promoted")
+        .count();
     let downloaded = app.manifest.len() - active;
     let nvme_gb: f64 = app
         .manifest
@@ -839,14 +877,16 @@ pub fn manifest(app: &mut SynthetrixApp, ui: &mut egui::Ui) {
                                 ui.output_mut(|o| o.copied_text = t);
                             }
                         });
-                        egui::ScrollArea::vertical().id_source("lb_params").show(&mut c[1], |ui| {
-                            ui.add(
-                                egui::TextEdit::multiline(&mut lb.params_text)
-                                    .desired_width(f32::INFINITY)
-                                    .desired_rows(20)
-                                    .font(egui::TextStyle::Monospace),
-                            );
-                        });
+                        egui::ScrollArea::vertical()
+                            .id_source("lb_params")
+                            .show(&mut c[1], |ui| {
+                                ui.add(
+                                    egui::TextEdit::multiline(&mut lb.params_text)
+                                        .desired_width(f32::INFINITY)
+                                        .desired_rows(20)
+                                        .font(egui::TextStyle::Monospace),
+                                );
+                            });
                     });
                 }
             });
@@ -872,7 +912,11 @@ pub fn settings(app: &mut SynthetrixApp, ui: &mut egui::Ui) {
             ui.separator();
 
             ui.label("CivitAI token (leave blank to use $CIVITAI_TOKEN):");
-            ui.add(egui::TextEdit::singleline(&mut cfg.token).desired_width(440.0).password(true));
+            ui.add(
+                egui::TextEdit::singleline(&mut cfg.token)
+                    .desired_width(440.0)
+                    .password(true),
+            );
 
             ui.add_space(8.0);
             ui.label("Storage tiers");
@@ -894,9 +938,14 @@ pub fn settings(app: &mut SynthetrixApp, ui: &mut egui::Ui) {
             ui.add_space(8.0);
             ui.label("Crawl");
             ui.add(egui::Slider::new(&mut cfg.top_n, 10..=500).text("top N per combo"));
-            ui.add(egui::Slider::new(&mut cfg.per_model, 1..=40).text("images per model on download"));
+            ui.add(
+                egui::Slider::new(&mut cfg.per_model, 1..=40).text("images per model on download"),
+            );
             ui.checkbox(&mut cfg.nsfw, "Include NSFW (requires Red-opted-in token)");
-            ui.checkbox(&mut cfg.include_video, "Include video clips in image harvest");
+            ui.checkbox(
+                &mut cfg.include_video,
+                "Include video clips in image harvest",
+            );
 
             ui.add_space(8.0);
             if ui.checkbox(&mut cfg.dark_mode, "Dark mode").changed() {

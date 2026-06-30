@@ -18,8 +18,8 @@ pub fn text_chunks(data: &[u8]) -> HashMap<String, String> {
     }
     let mut pos = 8usize;
     while pos + 8 <= data.len() {
-        let len = u32::from_be_bytes([data[pos], data[pos + 1], data[pos + 2], data[pos + 3]])
-            as usize;
+        let len =
+            u32::from_be_bytes([data[pos], data[pos + 1], data[pos + 2], data[pos + 3]]) as usize;
         let ctype = &data[pos + 4..pos + 8];
         let body_start = pos + 8;
         let body_end = body_start.saturating_add(len);

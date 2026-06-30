@@ -18,7 +18,11 @@ pub enum Cmd {
     Sync,
     QueryPicks(db::PickFilter),
     QueryManifest,
-    Download { file_id: i64, promote: bool, images: u32 },
+    Download {
+        file_id: i64,
+        promote: bool,
+        images: u32,
+    },
     Promote(i64),
     Evict(i64),
     Lock(i64, bool),
@@ -57,7 +61,11 @@ impl Worker {
         let (evt_tx, evt_rx) = std::sync::mpsc::channel::<Event>();
         let evt_for_thread = evt_tx.clone();
         std::thread::spawn(move || run(cfg, ctx, cmd_rx, evt_for_thread));
-        Worker { tx: cmd_tx, rx: evt_rx, evt_tx }
+        Worker {
+            tx: cmd_tx,
+            rx: evt_rx,
+            evt_tx,
+        }
     }
 }
 
@@ -119,29 +127,23 @@ impl CoverFetcher {
                     if let Some(t) = &token {
                         rb = rb.bearer_auth(t);
                     }
-                    match rb.send().and_then(|r| r.error_for_status()) {
-                        Ok(resp) => {
-                            let ct = resp
-                                .headers()
-                                .get(reqwest::header::CONTENT_TYPE)
-                                .and_then(|h| h.to_str().ok())
-                                .unwrap_or("")
-                                .split(';')
-                                .next()
-                                .unwrap_or("")
-                                .to_string();
-                            match resp.bytes() {
-                                Ok(bytes) => {
-                                    let _ = std::fs::create_dir_all(&dir);
-                                    let p = dir.join(format!("{mid}.{}", ext_for(&ct)));
-                                    if std::fs::write(&p, &bytes).is_ok() {
-                                        path = Some(p);
-                                    }
-                                }
-                                Err(_) => {}
+                    if let Ok(resp) = rb.send().and_then(|r| r.error_for_status()) {
+                        let ct = resp
+                            .headers()
+                            .get(reqwest::header::CONTENT_TYPE)
+                            .and_then(|h| h.to_str().ok())
+                            .unwrap_or("")
+                            .split(';')
+                            .next()
+                            .unwrap_or("")
+                            .to_string();
+                        if let Ok(bytes) = resp.bytes() {
+                            let _ = std::fs::create_dir_all(&dir);
+                            let p = dir.join(format!("{mid}.{}", ext_for(&ct)));
+                            if std::fs::write(&p, &bytes).is_ok() {
+                                path = Some(p);
                             }
                         }
-                        Err(_) => {}
                     }
                 }
                 match path {
@@ -219,9 +221,11 @@ fn handle(st: &mut State, cmd: Cmd) {
             }
         }
         Cmd::Sync => sync(st),
-        Cmd::Download { file_id, promote, images } => {
-            download(st, file_id, promote, images)
-        }
+        Cmd::Download {
+            file_id,
+            promote,
+            images,
+        } => download(st, file_id, promote, images),
         Cmd::Promote(id) => promote(st, id),
         Cmd::Evict(id) => evict(st, id),
         Cmd::Lock(id, v) => {
@@ -284,9 +288,9 @@ fn sync(st: &mut State) {
                 let mut cursor: Option<String> = None;
                 let mut kept = 0u32;
                 loop {
-                    let page = st.client.models_page(
-                        t, b, sort, period, cfg.nsfw, 100, cursor.as_deref(),
-                    );
+                    let page =
+                        st.client
+                            .models_page(t, b, sort, period, cfg.nsfw, 100, cursor.as_deref());
                     let page = match page {
                         Ok(p) => p,
                         Err(e) => {
@@ -364,9 +368,7 @@ fn download(st: &mut State, file_id: i64, do_promote: bool, images: u32) {
         },
     );
     let (url, name, mtype, sha_expected, model_id) = match row {
-        Ok((Some(u), Some(n), mt, sha, mid)) => {
-            (u, n, mt.unwrap_or_default(), sha, mid)
-        }
+        Ok((Some(u), Some(n), mt, sha, mid)) => (u, n, mt.unwrap_or_default(), sha, mid),
         _ => {
             st.emit(Event::Error(format!("file {file_id} not downloadable")));
             return;
@@ -375,8 +377,12 @@ fn download(st: &mut State, file_id: i64, do_promote: bool, images: u32) {
     let dest = vault_dest(&st.cfg, &mtype, &name);
     if dest.exists() {
         if let Some(conn) = &st.conn {
-            db::set_downloaded(conn, file_id, &dest.to_string_lossy(),
-                sha_expected.as_deref().unwrap_or(""));
+            db::set_downloaded(
+                conn,
+                file_id,
+                &dest.to_string_lossy(),
+                sha_expected.as_deref().unwrap_or(""),
+            );
         }
         st.status(format!("{name} already in vault"));
     } else {
@@ -390,7 +396,8 @@ fn download(st: &mut State, file_id: i64, do_promote: bool, images: u32) {
             if done == total || done % (16 << 20) < (1 << 20) {
                 let _ = tx.send(Event::Status(format!(
                     "downloading {nm}  {pct}%  {}/{} MB",
-                    done >> 20, total >> 20
+                    done >> 20,
+                    total >> 20
                 )));
                 ctx.request_repaint();
             }
@@ -401,7 +408,9 @@ fn download(st: &mut State, file_id: i64, do_promote: bool, images: u32) {
                 if let Some(exp) = &sha_expected {
                     if !exp.is_empty() && !exp.eq_ignore_ascii_case(&sha) {
                         let _ = std::fs::remove_file(&dest);
-                        st.emit(Event::Error(format!("SHA256 mismatch for {name} — discarded")));
+                        st.emit(Event::Error(format!(
+                            "SHA256 mismatch for {name} — discarded"
+                        )));
                         return;
                     }
                 }
@@ -431,7 +440,9 @@ fn download(st: &mut State, file_id: i64, do_promote: bool, images: u32) {
 
 fn promote(st: &mut State, file_id: i64) {
     let Some(conn) = &st.conn else { return };
-    let Some(row) = db::file_row(conn, file_id) else { return };
+    let Some(row) = db::file_row(conn, file_id) else {
+        return;
+    };
     let Some(src) = row.local_path.clone() else {
         st.emit(Event::Error("not in vault — download first".into()));
         return;
@@ -453,7 +464,13 @@ fn promote(st: &mut State, file_id: i64) {
     match res {
         Ok(_) => {
             db::set_promoted(conn, file_id, &dst.to_string_lossy());
-            db::log(conn, file_id, row.model_id, "promote", &dst.to_string_lossy());
+            db::log(
+                conn,
+                file_id,
+                row.model_id,
+                "promote",
+                &dst.to_string_lossy(),
+            );
             st.status(format!("active on NVMe: {}", row.file_name));
         }
         Err(e) => st.emit(Event::Error(format!("hotload failed: {e}"))),
@@ -463,9 +480,13 @@ fn promote(st: &mut State, file_id: i64) {
 
 fn evict(st: &mut State, file_id: i64) {
     let Some(conn) = &st.conn else { return };
-    let Some(row) = db::file_row(conn, file_id) else { return };
+    let Some(row) = db::file_row(conn, file_id) else {
+        return;
+    };
     if row.locked {
-        st.emit(Event::Error("replica is locked — unlock before evicting".into()));
+        st.emit(Event::Error(
+            "replica is locked — unlock before evicting".into(),
+        ));
         return;
     }
     if let Some(np) = &row.nvme_path {
@@ -515,7 +536,12 @@ fn harvest_all(st: &mut State) {
     let mut saved = 0usize;
     let mut wf = 0usize;
     for (i, mid) in ids.iter().enumerate() {
-        st.status(format!("capturing images {}/{} (model {})", i + 1, total, mid));
+        st.status(format!(
+            "capturing images {}/{} (model {})",
+            i + 1,
+            total,
+            mid
+        ));
         let (s, w) = harvest_images(st, *mid, per, false);
         saved += s;
         wf += w;
@@ -612,7 +638,6 @@ fn recover_orphans(st: &mut State, paths: Vec<String>) {
     refresh_manifest(st);
 }
 
-
 // ---- example image harvest (shared by sync starter + download full) --------
 
 fn ext_for(ct: &str) -> &'static str {
@@ -705,12 +730,19 @@ fn harvest_images(st: &mut State, model_id: i64, per: u32, starter: bool) -> (us
         }
         if let Some(conn) = &st.conn {
             db::record_image(
-                conn, img_id, model_id, &url, mtype,
+                conn,
+                img_id,
+                model_id,
+                &url,
+                mtype,
                 im.get("nsfwLevel").and_then(|x| x.as_str()),
                 im.get("width").and_then(|x| x.as_i64()),
                 im.get("height").and_then(|x| x.as_i64()),
                 &fpath.to_string_lossy(),
-                wf_path.as_deref(), params_path.as_deref(), has_wf, starter,
+                wf_path.as_deref(),
+                params_path.as_deref(),
+                has_wf,
+                starter,
             );
         }
         saved += 1;

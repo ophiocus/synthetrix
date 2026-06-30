@@ -9,6 +9,8 @@ app's runtime version is derived from the latest `v*` git tag (`app/build.rs` �
 
 ## [Unreleased]
 
+## [0.1.1] - 2026-06-29
+
 ### Added
 - **Manifest registry lifecycle** — Audit (vault / NVMe / orphan scan) and Heal
   (reset vanished rows for re-fetch; adopt loose files by filename); Hotload
@@ -45,6 +47,16 @@ app's runtime version is derived from the latest `v*` git tag (`app/build.rs` �
   scattered ComfyUI/model folders into VAULT (`H:\Models`, HDD) + RUNTIME (NVMe),
   with the Synthetrix app as the download→vault→promote→evict bridge.
 
+### CI
+- **Build/test CI** (`.github/workflows/ci.yml`) — `cargo fmt --check` /
+  `clippy -D warnings` / `cargo test` on push + PR to `master` (pinned toolchain
+  1.93.1; mirrors the TinyBooth gate pattern). Crate lives in `app/`, so steps run
+  there.
+- **Relocated the tag-release workflow to the repo root** (`.github/workflows/
+  release.yml`). It previously sat under `app/.github/workflows/`, where GitHub
+  Actions never reads it — so it had never run. Now verifies tag↔`Cargo.toml`,
+  builds, packages the MSI (WiX 3.11), and publishes the GitHub release.
+
 ## [0.1.0] - 2026-06-28
 
 ### Added
@@ -76,5 +88,6 @@ app's runtime version is derived from the latest `v*` git tag (`app/build.rs` �
 - `AIPROD_CORRELATIONS.md` — knowledge artifact cross-referencing the AIProd
   ComfyUI provisioning work (complementary curated-baseline system).
 
-[Unreleased]: https://github.com/ophiocus/synthetrix/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/ophiocus/synthetrix/compare/v0.1.1...HEAD
+[0.1.1]: https://github.com/ophiocus/synthetrix/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/ophiocus/synthetrix/releases/tag/v0.1.0
