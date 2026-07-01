@@ -1940,14 +1940,21 @@ pub fn manifest(app: &mut SynthetrixApp, ui: &mut egui::Ui) {
                     ui.selectable_value(&mut lb.show_info, false, "🖼 Image");
                     ui.selectable_value(&mut lb.show_info, true, "ⓘ Workflow + Params");
                     ui.separator();
-                    let has_wf = lb.wf_path.is_some();
+                    // Enable when we have a sidecar workflow OR the image is a PNG:
+                    // PNGs routinely carry the workflow *embedded* in the file, which
+                    // ComfyUI reads directly on drop — so a locally-generated image with
+                    // no Synthetrix sidecar still opens (open_in_comfy uploads the raw PNG
+                    // and ComfyUI loads its embedded graph).
+                    let is_png = lb.image_path.to_ascii_lowercase().ends_with(".png");
+                    let can_open = lb.wf_path.is_some() || is_png;
                     if ui
-                        .add_enabled(has_wf, egui::Button::new("Open workflow in ComfyUI"))
+                        .add_enabled(can_open, egui::Button::new("Open workflow in ComfyUI"))
                         .on_hover_text(
-                            "Embed the workflow in the image, hand it to the running ComfyUI \
-                             (:8188), and open it — drops the image straight onto the canvas",
+                            "Hand the image to the running ComfyUI (:8188) and open it — \
+                             uses the Synthetrix workflow if present, otherwise the graph \
+                             embedded in the PNG",
                         )
-                        .on_disabled_hover_text("no workflow for this image")
+                        .on_disabled_hover_text("no workflow, and not a PNG that could embed one")
                         .clicked()
                     {
                         let img = lb.image_path.clone();

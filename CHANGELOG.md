@@ -9,6 +9,16 @@ app's runtime version is derived from the latest `v*` git tag (`app/build.rs` �
 
 ## [Unreleased]
 
+## [0.1.9] - 2026-07-01
+
+### Fixed
+- **"Open workflow in ComfyUI" was grayed out for images without a sidecar.** The
+  button only enabled when Synthetrix had a `.workflow.json` (or synthesizable
+  A1111 params). But PNGs — especially locally-generated ones — carry the workflow
+  *embedded in the file*, which ComfyUI reads directly on open. The button now
+  enables for any PNG (or when a sidecar exists); with no sidecar it uploads the
+  raw PNG and ComfyUI loads the embedded graph.
+
 ## [0.1.8] - 2026-07-01
 
 ### Fixed
