@@ -33,11 +33,16 @@ pub const APP_GH_REPO: &str = "ophiocus/synthetrix";
 fn main() -> eframe::Result<()> {
     harden_graphics_env();
 
+    let mut viewport = egui::ViewportBuilder::default()
+        .with_inner_size([1200.0, 800.0])
+        .with_min_inner_size([800.0, 500.0])
+        .with_title(APP_WINDOW_TITLE);
+    if let Some(icon) = load_window_icon() {
+        viewport = viewport.with_icon(icon);
+    }
+
     let native_options = eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default()
-            .with_inner_size([1200.0, 800.0])
-            .with_min_inner_size([800.0, 500.0])
-            .with_title(APP_WINDOW_TITLE),
+        viewport,
         // Render through wgpu → Vulkan (see harden_graphics_env): the OpenGL
         // path is hooked by OBS/NVIDIA capture layers that overflow the stack.
         renderer: eframe::Renderer::Wgpu,
@@ -49,6 +54,21 @@ fn main() -> eframe::Result<()> {
         native_options,
         Box::new(|cc| Ok(Box::new(app::SynthetrixApp::new(cc)))),
     )
+}
+
+/// The window / taskbar icon: the transparent Synthetrix badge, embedded at build
+/// time and decoded to RGBA for eframe. Returns None if decoding ever fails so the
+/// app still launches (just without a custom icon).
+fn load_window_icon() -> Option<egui::IconData> {
+    let img = image::load_from_memory(include_bytes!("../assets/logo.png"))
+        .ok()?
+        .into_rgba8();
+    let (width, height) = img.dimensions();
+    Some(egui::IconData {
+        rgba: img.into_raw(),
+        width,
+        height,
+    })
 }
 
 /// Steer graphics init away from third-party capture hooks that crash us.

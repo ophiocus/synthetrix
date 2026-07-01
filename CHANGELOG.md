@@ -9,6 +9,15 @@ app's runtime version is derived from the latest `v*` git tag (`app/build.rs` â†
 
 ## [Unreleased]
 
+## [0.1.7] - 2026-07-01
+
+### Changed
+- **The logo is now the app's window/taskbar icon.** Set the eframe
+  `ViewportBuilder` icon (`main.rs` â†’ `load_window_icon`) from the embedded badge,
+  replacing eframe's default glyph in the title bar and taskbar. The logo assets
+  (`app/assets/logo.png`/`logo_1024.png`/`icon.ico`) are now **transparent**
+  (circular cut) so the mark sits cleanly on any background.
+
 ## [0.1.6] - 2026-07-01
 
 ### Changed
