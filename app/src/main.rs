@@ -12,6 +12,7 @@ mod config;
 mod convert;
 mod db;
 mod git_update;
+mod lore;
 mod pngmeta;
 mod project;
 mod tabs;

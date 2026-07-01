@@ -2,7 +2,7 @@
 //! borrows and buffers any actions in RefCells, which are drained into worker
 //! commands after the UI closures close (keeps the borrow checker happy).
 
-use crate::app::{CoverState, SynthetrixApp};
+use crate::app::{non_empty, CoverState, SynthetrixApp};
 use crate::config::Config;
 use crate::worker::{Cmd, CoverReq};
 use eframe::egui;
@@ -653,6 +653,186 @@ pub fn prompts(app: &mut SynthetrixApp, ui: &mut egui::Ui) {
     }
     for c in cmds.into_inner() {
         app.send(c);
+    }
+}
+
+// ---- Lore ------------------------------------------------------------------
+
+/// Colour a lore kind consistently in the chip row + list.
+fn lore_kind_color(kind: &str) -> egui::Color32 {
+    match kind {
+        "characters" => egui::Color32::from_rgb(120, 190, 240),
+        "factions" => egui::Color32::from_rgb(230, 150, 90),
+        "vehicles" => egui::Color32::from_rgb(150, 200, 130),
+        "weapons" => egui::Color32::from_rgb(220, 120, 120),
+        "world" => egui::Color32::from_rgb(160, 200, 200),
+        "concepts" => egui::Color32::from_rgb(200, 160, 220),
+        "timeline" => egui::Color32::from_rgb(210, 200, 120),
+        "root" => egui::Color32::GRAY,
+        _ => egui::Color32::from_gray(150),
+    }
+}
+
+pub fn lore(app: &mut SynthetrixApp, ui: &mut egui::Ui) {
+    ui.add_space(8.0);
+    ui.heading("Lore — the IP's universal scaffolding");
+    if app.project_info.is_none() {
+        ui.add_space(16.0);
+        ui.weak("No project open. Pick an IP from the switcher (top-right) first.");
+        return;
+    }
+    let lore_root = app
+        .project_info
+        .as_ref()
+        .map(|i| i.lore_root.clone())
+        .unwrap_or_default();
+    ui.weak(format!(
+        "Indexed from {lore_root} · {} docs · reader is read-only (git repo is source of truth)",
+        app.lore.len()
+    ));
+    ui.separator();
+
+    let mut do_query = false;
+    let mut do_reindex = false;
+    let mut set_kind: Option<Option<String>> = None; // outer Some = "changed"
+    let open_id: RefCell<Option<i64>> = RefCell::new(None);
+    let to_prompt: RefCell<Option<String>> = RefCell::new(None);
+
+    // controls
+    {
+        let lu = &mut app.lore_ui;
+        ui.horizontal_wrapped(|ui| {
+            ui.label("Search:");
+            let r = ui.add(egui::TextEdit::singleline(&mut lu.search).desired_width(180.0));
+            if r.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+                do_query = true;
+            }
+            if ui.button("Find").clicked() {
+                do_query = true;
+            }
+            ui.separator();
+            if ui.button("↻ Reindex").clicked() {
+                do_reindex = true;
+            }
+        });
+        ui.horizontal_wrapped(|ui| {
+            let all_sel = lu.kind.is_none();
+            if ui.selectable_label(all_sel, "all").clicked() && !all_sel {
+                set_kind = Some(None);
+            }
+            for k in &app.lore_kinds {
+                let sel = lu.kind.as_deref() == Some(k.as_str());
+                let label = egui::RichText::new(k).color(lore_kind_color(k));
+                if ui.selectable_label(sel, label).clicked() && !sel {
+                    set_kind = Some(Some(k.clone()));
+                }
+            }
+        });
+    }
+    ui.separator();
+
+    // split: list on the left, reader on the right
+    ui.columns(2, |cols| {
+        // --- left: entry list ---
+        egui::ScrollArea::vertical()
+            .id_source("lore_list")
+            .show(&mut cols[0], |ui| {
+                for e in &app.lore {
+                    let open = app.lore_ui.open.as_ref().map(|(o, _)| o.id) == Some(e.id);
+                    let resp = ui.selectable_label(
+                        open,
+                        egui::RichText::new(format!("● {}", e.title))
+                            .color(lore_kind_color(&e.kind)),
+                    );
+                    if resp.clicked() {
+                        *open_id.borrow_mut() = Some(e.id);
+                    }
+                    ui.horizontal_wrapped(|ui| {
+                        ui.add_space(14.0);
+                        ui.weak(format!("{} · {}", e.kind, e.name));
+                    });
+                    if !e.summary.is_empty() {
+                        ui.horizontal_wrapped(|ui| {
+                            ui.add_space(14.0);
+                            ui.label(egui::RichText::new(&e.summary).small());
+                        });
+                    }
+                    ui.separator();
+                }
+                if app.lore.is_empty() {
+                    ui.add_space(20.0);
+                    ui.weak("No lore indexed. Click ↻ Reindex to scan the lore repo.");
+                }
+            });
+
+        // --- right: reader ---
+        egui::ScrollArea::vertical()
+            .id_source("lore_reader")
+            .show(&mut cols[1], |ui| match &app.lore_ui.open {
+                Some((entry, body)) => {
+                    ui.heading(&entry.title);
+                    ui.horizontal_wrapped(|ui| {
+                        ui.colored_label(lore_kind_color(&entry.kind), &entry.kind);
+                        ui.weak(&entry.rel_path);
+                        if !entry.updated_at.is_empty() {
+                            ui.weak(format!("· indexed {}", entry.updated_at));
+                        }
+                    });
+                    if !entry.vocab.is_empty() {
+                        ui.add_space(2.0);
+                        ui.horizontal_wrapped(|ui| {
+                            ui.small("vocab:");
+                            ui.label(egui::RichText::new(&entry.vocab).small().italics());
+                        });
+                        if ui
+                            .small_button("→ Prompts")
+                            .on_hover_text("stage this entry's name for a prompts.md import")
+                            .clicked()
+                        {
+                            *to_prompt.borrow_mut() = Some(entry.name.clone());
+                        }
+                    }
+                    ui.separator();
+                    // read-only markdown source view
+                    let mut src = body.clone();
+                    ui.add(
+                        egui::TextEdit::multiline(&mut src)
+                            .desired_rows(30)
+                            .desired_width(f32::INFINITY)
+                            .code_editor()
+                            .interactive(false),
+                    );
+                }
+                None => {
+                    ui.add_space(20.0);
+                    ui.weak("Select an entry on the left to read it.");
+                }
+            });
+    });
+
+    // drain
+    if let Some(k) = set_kind {
+        app.lore_ui.kind = k.clone();
+        app.send(Cmd::QueryLore {
+            kind: k,
+            search: non_empty(&app.lore_ui.search),
+        });
+    }
+    if do_query {
+        app.send(Cmd::QueryLore {
+            kind: app.lore_ui.kind.clone(),
+            search: non_empty(&app.lore_ui.search),
+        });
+    }
+    if do_reindex {
+        app.send(Cmd::ReindexLore);
+    }
+    if let Some(id) = open_id.into_inner() {
+        app.send(Cmd::ReadLore(id));
+    }
+    if let Some(name) = to_prompt.into_inner() {
+        app.prompts_ui.import_entity = name;
+        app.tab = crate::app::Tab::Prompts;
     }
 }
 

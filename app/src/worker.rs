@@ -46,6 +46,15 @@ pub enum Cmd {
     ImportPrompts {
         entity: String,
     },
+    /// Lore: rebuild the lore index from the IP's lore repo.
+    ReindexLore,
+    /// Lore: browse the index, filtered by kind + free-text search.
+    QueryLore {
+        kind: Option<String>,
+        search: Option<String>,
+    },
+    /// Lore: read one entry's full markdown for the reader panel.
+    ReadLore(i64),
     Sync,
     QueryPicks(db::PickFilter),
     QueryManifest,
@@ -88,6 +97,16 @@ pub enum Event {
     Assets(Vec<project::AssetRow>),
     /// Prompt matrix rows.
     Prompts(Vec<project::PromptRow>),
+    /// Lore index rows + the distinct kinds present (for filter chips).
+    Lore {
+        entries: Vec<crate::lore::LoreEntry>,
+        kinds: Vec<String>,
+    },
+    /// One lore entry's full text: (entry, body).
+    LoreText {
+        entry: crate::lore::LoreEntry,
+        body: String,
+    },
     Error(String),
 }
 
@@ -284,6 +303,9 @@ fn handle(st: &mut State, cmd: Cmd) {
             emit_project_info(st);
         }
         Cmd::ImportPrompts { entity } => import_prompts(st, entity),
+        Cmd::ReindexLore => reindex_lore(st),
+        Cmd::QueryLore { kind, search } => query_lore_cmd(st, kind, search),
+        Cmd::ReadLore(id) => read_lore(st, id),
         Cmd::QueryPicks(f) => {
             if let Some(conn) = &st.conn {
                 match db::query_picks(conn, &f) {
@@ -351,6 +373,15 @@ fn set_project(st: &mut State, p: Project) {
             refresh_forge(st);
             query_assets_cmd(st, None, None);
             query_prompts_cmd(st, None);
+            // First open of an IP builds the lore index; later opens reuse it
+            // (an explicit Reindex button refreshes on demand).
+            if let Some(c) = &st.project_conn {
+                if crate::lore::count(c) == 0 && Path::new(&p.lore_root).is_dir() {
+                    let n = crate::lore::reindex(c, Path::new(&p.lore_root));
+                    st.emit(Event::Log(format!("lore: indexed {n} docs for {}", p.name)));
+                }
+            }
+            query_lore_cmd(st, None, None);
             st.status(format!("project: {}", p.name));
         }
         Err(e) => {
@@ -674,6 +705,66 @@ fn import_prompts(st: &mut State, entity: String) {
     st.status(format!("imported {n} prompts for {ent}"));
     query_prompts_cmd(st, None);
     emit_project_info(st);
+}
+
+// ---- Phase 4: Lore subsystem -----------------------------------------------
+
+fn query_lore_cmd(st: &State, kind: Option<String>, search: Option<String>) {
+    if let Some(c) = &st.project_conn {
+        let entries = crate::lore::query(
+            c,
+            kind.as_deref().filter(|s| !s.is_empty()),
+            search.as_deref().filter(|s| !s.is_empty()),
+            2000,
+        );
+        let kinds = crate::lore::kinds(c);
+        st.emit(Event::Lore { entries, kinds });
+    }
+}
+
+/// Rebuild the lore index from the IP's lore repo, then re-emit the browse view.
+fn reindex_lore(st: &mut State) {
+    let Some(project) = st.active_project.clone() else {
+        st.emit(Event::Error("no project open".into()));
+        return;
+    };
+    let root = Path::new(&project.lore_root);
+    if !root.is_dir() {
+        st.emit(Event::Error(format!(
+            "lore root missing: {}",
+            project.lore_root
+        )));
+        return;
+    }
+    st.emit(Event::Busy(true));
+    let n = match &st.project_conn {
+        Some(c) => crate::lore::reindex(c, root),
+        None => 0,
+    };
+    st.emit(Event::Busy(false));
+    st.status(format!("lore: re-indexed {n} docs"));
+    query_lore_cmd(st, None, None);
+    emit_project_info(st);
+}
+
+/// Read one lore entry's full markdown for the reader panel.
+fn read_lore(st: &State, id: i64) {
+    let Some(project) = st.active_project.as_ref() else {
+        return;
+    };
+    let Some(entry) = st
+        .project_conn
+        .as_ref()
+        .and_then(|c| crate::lore::entry_by_id(c, id))
+    else {
+        st.emit(Event::Error("lore entry not found".into()));
+        return;
+    };
+    let path = crate::lore::abs_path(&project.lore_root, &entry.rel_path);
+    match std::fs::read_to_string(&path) {
+        Ok(body) => st.emit(Event::LoreText { entry, body }),
+        Err(e) => st.emit(Event::Error(format!("read {}: {e}", entry.rel_path))),
+    }
 }
 
 const QUERIES: [(&str, &str); 3] = [

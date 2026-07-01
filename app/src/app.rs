@@ -12,6 +12,7 @@ pub enum Tab {
     Forge,
     Assets,
     Prompts,
+    Lore,
     Fetcher,
     Picker,
     Manifest,
@@ -25,6 +26,15 @@ pub struct PromptsUi {
     pub import_entity: String,
     pub edit: crate::project::PromptRow, // id==0 => new
     pub editing: bool,
+}
+
+/// Lore subsystem tab state: filter chips + free-text search + open reader.
+#[derive(Default)]
+pub struct LoreUi {
+    pub kind: Option<String>, // None = all kinds
+    pub search: String,
+    /// The entry currently open in the reader (id + full body text).
+    pub open: Option<(crate::lore::LoreEntry, String)>,
 }
 
 /// Asset Manager tab inputs.
@@ -205,6 +215,10 @@ pub struct SynthetrixApp {
     /// Prompt matrix state.
     pub prompts_ui: PromptsUi,
     pub prompts: Vec<crate::project::PromptRow>,
+    /// Lore subsystem state.
+    pub lore_ui: LoreUi,
+    pub lore: Vec<crate::lore::LoreEntry>,
+    pub lore_kinds: Vec<String>,
 
     pub status: Option<String>,
     pub busy: bool,
@@ -274,6 +288,9 @@ impl SynthetrixApp {
             assets: Vec::new(),
             prompts_ui: PromptsUi::default(),
             prompts: Vec::new(),
+            lore_ui: LoreUi::default(),
+            lore: Vec::new(),
+            lore_kinds: Vec::new(),
             status: None,
             busy: false,
             sync: None,
@@ -364,6 +381,13 @@ impl SynthetrixApp {
                 Event::Prompts(rows) => {
                     self.prompts = rows;
                 }
+                Event::Lore { entries, kinds } => {
+                    self.lore = entries;
+                    self.lore_kinds = kinds;
+                }
+                Event::LoreText { entry, body } => {
+                    self.lore_ui.open = Some((entry, body));
+                }
                 Event::Error(e) => {
                     let msg = format!("⚠ {e}");
                     self.log.push(msg.clone());
@@ -419,6 +443,7 @@ impl eframe::App for SynthetrixApp {
                 ui.selectable_value(&mut self.tab, Tab::Forge, "✦ Forge");
                 ui.selectable_value(&mut self.tab, Tab::Assets, "🎞 Assets");
                 ui.selectable_value(&mut self.tab, Tab::Prompts, "✎ Prompts");
+                ui.selectable_value(&mut self.tab, Tab::Lore, "📖 Lore");
                 ui.selectable_value(&mut self.tab, Tab::Fetcher, "⬇ Fetcher");
                 ui.selectable_value(&mut self.tab, Tab::Picker, "☑ Picker");
                 ui.selectable_value(&mut self.tab, Tab::Manifest, "🗂 Manifest");
@@ -456,6 +481,7 @@ impl eframe::App for SynthetrixApp {
                 self.send(Cmd::SetProject(p));
             }
             self.project_info = None;
+            self.lore_ui.open = None;
             self.tab = Tab::Dashboard;
         }
 
@@ -485,6 +511,7 @@ impl eframe::App for SynthetrixApp {
             Tab::Forge => crate::tabs::forge(self, ui),
             Tab::Assets => crate::tabs::assets(self, ui),
             Tab::Prompts => crate::tabs::prompts(self, ui),
+            Tab::Lore => crate::tabs::lore(self, ui),
             Tab::Fetcher => crate::tabs::fetcher(self, ui),
             Tab::Picker => crate::tabs::picker(self, ui),
             Tab::Manifest => crate::tabs::manifest(self, ui),
