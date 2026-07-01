@@ -9,6 +9,16 @@ app's runtime version is derived from the latest `v*` git tag (`app/build.rs` �
 
 ## [Unreleased]
 
+## [0.1.6] - 2026-07-01
+
+### Changed
+- **Brand identity: official Synthetrix logo + app icon.** Locked the cyberpunk
+  serpent-crest emblem — an interlocking magenta **S** monogram set in a machined
+  cyan/magenta bezel with cardinal facets — as the app's logo. Replaced
+  `app/assets/icon.ico` (embedded via `winres`) so the Windows build and MSI ship
+  the new icon, added `app/assets/logo.png`, and put it at the top of the README.
+  Fittingly, the mark was generated on Synthetrix's own local ComfyUI pipeline.
+
 ## [0.1.5] - 2026-06-30
 
 ### Fixed

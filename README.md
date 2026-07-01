@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="app/assets/logo.png" width="180" alt="Synthetrix logo">
+</p>
+
 # synthetrix — CivitAI checkpoint/LoRA harvester
 
 A three-stage pipeline to **index → choose → fetch** the best/latest CivitAI
