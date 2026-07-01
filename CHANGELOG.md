@@ -9,6 +9,24 @@ app's runtime version is derived from the latest `v*` git tag (`app/build.rs` �
 
 ## [Unreleased]
 
+## [0.1.5] - 2026-06-30
+
+### Fixed
+- **App wouldn't launch — instant stack-overflow crash (0xC00000FD) on startup.**
+  Root cause was a third-party graphics **capture hook**, not our code: OBS's
+  Vulkan implicit layer `VK_LAYER_OBS_HOOK`
+  (`C:\ProgramData\obs-studio-hook\graphics-hook64.dll`, registered globally so
+  the Vulkan loader injects it into every GPU app) overflowed the stack during
+  graphics init on the current NVIDIA driver (32.0.15.9579). The OpenGL path was
+  hooked too (crash surfaced in `nvoglv64.dll`), so an empty eframe window
+  reproduced it. Fixes, all self-contained in the binary (no user action, no
+  overlay changes needed):
+  - render through **wgpu → Vulkan** instead of OpenGL/glow (glow is hooked; DX12
+    surface creation fails on this driver);
+  - at startup, opt our process out of the OBS Vulkan layer via its manifest
+    `disable_environment` key (`DISABLE_VULKAN_OBS_CAPTURE=1`) and pin
+    `WGPU_BACKEND=vulkan` — both only when unset, so a user can still override.
+
 ## [0.1.4] - 2026-06-30
 
 ### Added
