@@ -9,6 +9,15 @@ app's runtime version is derived from the latest `v*` git tag (`app/build.rs` �
 
 ## [Unreleased]
 
+## [0.1.10] - 2026-07-01
+
+### Fixed
+- **Installer creates Start Menu + Desktop shortcuts.** The MSI laid down the
+  binary but no shortcut — so after an upgrade removed the old shortcut the app
+  had nowhere to launch from and looked "gone." Added a persisted WiX source
+  (`app/wix/main.wxs`) with Start Menu and Desktop shortcuts. The UpgradeCode is
+  unchanged (`FE0265EA-…`) so existing installs still upgrade in place.
+
 ## [0.1.9] - 2026-07-01
 
 ### Fixed
