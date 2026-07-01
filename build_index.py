@@ -28,7 +28,10 @@ def main() -> None:
     ap.add_argument("--type", action="append", dest="types",
                     help="Restrict to these model types (repeatable).")
     ap.add_argument("--top-n", type=int, default=cfg["crawl"]["top_n"])
-    ap.add_argument("--no-nsfw", action="store_true", help="Exclude NSFW.")
+    ap.add_argument("--no-nsfw", action="store_true", help="Skip the mature/Red pass.")
+    ap.add_argument("--no-sfw", action="store_true", help="Skip the SFW/civit pass.")
+    ap.add_argument("--nsfw-only", action="store_true", help="Only the Red pass.")
+    ap.add_argument("--sfw-only", action="store_true", help="Only the SFW/civit pass.")
     ap.add_argument("--no-starter", action="store_true",
                     help="Skip downloading the 1 preview image per model.")
     ap.add_argument("--dry-run", action="store_true")
@@ -38,18 +41,24 @@ def main() -> None:
     types = args.types or crawl["types"]
     base_models = crawl["base_models"]
     queries = crawl["query"]
-    nsfw = crawl["nsfw"] and not args.no_nsfw
+    # Browsing scopes to crawl. Each is its own top-N pass per combo, so mainstream
+    # ("civit"/SFW) models aren't buried under mature ones in Red-heavy base models.
+    want_sfw = crawl.get("sfw", True) and not args.no_sfw and not args.nsfw_only
+    want_nsfw = crawl.get("nsfw", True) and not args.no_nsfw and not args.sfw_only
+    scopes = ([("civit", False)] if want_sfw else []) + ([("red", True)] if want_nsfw else [])
+    if not scopes:
+        scopes = [("civit", False)]
 
     combos = [(t, b, q) for t in types for b in base_models for q in queries]
-    print(f"Plan: {len(combos)} combos "
+    print(f"Plan: {len(combos)} combos x {len(scopes)} scope(s) "
           f"({len(types)} types x {len(base_models)} base x {len(queries)} queries), "
-          f"top {args.top_n} each, nsfw={nsfw}")
+          f"top {args.top_n} each, scopes={[s[0] for s in scopes]}")
     if args.dry_run:
         for t, b, q in combos:
             print(f"  {t:11} | {b:12} | {q['sort']:16} {q['period']}")
         return
 
-    token = get_token(required=nsfw)  # token mandatory only when pulling NSFW
+    token = get_token(required=want_nsfw)  # token mandatory only for the Red pass
     client = CivitAIClient(
         cfg["api"]["base_url"], token,
         requests_per_min=cfg["api"]["requests_per_min"],
@@ -65,25 +74,27 @@ def main() -> None:
     seen_models: set[int] = set()
     total = starters = 0
     for t, b, q in combos:
-        kept = 0
-        for m in client.iter_models(
-            types=t, base_models=b, sort=q["sort"], period=q["period"],
-            nsfw=nsfw, page_size=crawl["page_size"], max_items=args.top_n,
-        ):
-            upsert_model(conn, m)
-            versions = m.get("modelVersions") or []
-            if m["id"] not in seen_models and versions:
-                write_usage_doc(catalog_dir, m, versions[0])
-                if want_starter:
-                    tally = harvest_model(conn, sess, gallery_root, m["id"],
-                                          per=1, include_video=include_video,
-                                          starter=True)
-                    starters += sum(v for k, v in tally.items()
-                                    if k.startswith("saved"))
-                seen_models.add(m["id"])
-            kept += 1
-            total += 1
-        print(f"  [{t:11}|{b:12}|{q['sort']:16}{q['period']:8}] {kept:4} models")
+        for scope_name, scope_nsfw in scopes:
+            kept = 0
+            for m in client.iter_models(
+                types=t, base_models=b, sort=q["sort"], period=q["period"],
+                nsfw=scope_nsfw, page_size=crawl["page_size"], max_items=args.top_n,
+            ):
+                upsert_model(conn, m)
+                versions = m.get("modelVersions") or []
+                if m["id"] not in seen_models and versions:
+                    write_usage_doc(catalog_dir, m, versions[0])
+                    if want_starter:
+                        tally = harvest_model(conn, sess, gallery_root, m["id"],
+                                              per=1, include_video=include_video,
+                                              starter=True)
+                        starters += sum(v for k, v in tally.items()
+                                        if k.startswith("saved"))
+                    seen_models.add(m["id"])
+                kept += 1
+                total += 1
+            print(f"  [{scope_name:5}|{t:11}|{b:12}|{q['sort']:16}{q['period']:8}] "
+                  f"{kept:4} models")
 
     print(f"\nDone. {total} model-rows processed, "
           f"{len(seen_models)} unique models, {starters} starter previews. "

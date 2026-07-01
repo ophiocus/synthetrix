@@ -26,8 +26,12 @@ Upscaler        = "upscale_models"
 # Checkpoint/LORA/LoCon = the big NSFW carriers; TextualInversion = tiny concepts.
 types       = ["Checkpoint", "LORA", "LoCon", "TextualInversion"]
 base_models = ["Flux.1 D", "Flux.1 S", "SDXL 1.0", "Pony", "Illustrious", "SD 1.5"]
-nsfw        = true        # requires a Red-opted-in API token
-top_n       = 150         # items kept per (type x base_model x query)
+# Coverage: run an SFW ("civit", nsfw=false) pass AND a Red ("nsfw=true", includes
+# mature) pass per combo, so mainstream models aren't buried under adult ones in
+# Red-heavy base models. Each pass keeps its own top-N; results merge + dedupe.
+sfw         = true        # gather the mainstream/SFW top-N ("civit")
+nsfw        = true        # also gather the mature/Red top-N (needs a Red-opted token)
+top_n       = 150         # items kept per (type x base_model x query x scope)
 page_size   = 100         # API max
 
 # Each query is a distinct ranking lens; results are merged + deduped.
