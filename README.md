@@ -1,8 +1,10 @@
 <p align="center">
-  <img src="app/assets/logo.png" width="180" alt="Synthetrix logo">
+  <img src="app/assets/logo.png" width="360" alt="Synthetrix">
 </p>
 
-# synthetrix — CivitAI checkpoint/LoRA harvester
+<h1 align="center">Synthetrix</h1>
+
+<p align="center"><em>CivitAI checkpoint/LoRA harvester — index → choose → fetch, HDD vault → NVMe on demand.</em></p>
 
 A three-stage pipeline to **index → choose → fetch** the best/latest CivitAI
 checkpoints & LoRAs, store them on the HDD vault, and promote to NVMe on demand.
