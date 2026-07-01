@@ -816,15 +816,15 @@ pub fn lore(app: &mut SynthetrixApp, ui: &mut egui::Ui) {
                         }
                     }
                     ui.separator();
-                    // read-only markdown source view
-                    let mut src = body.clone();
-                    ui.add(
-                        egui::TextEdit::multiline(&mut src)
-                            .desired_rows(30)
-                            .desired_width(f32::INFINITY)
-                            .code_editor()
-                            .interactive(false),
-                    );
+                    // Rendered markdown — the reader is a real markdown client.
+                    thread_local! {
+                        static LORE_MD: std::cell::RefCell<egui_commonmark::CommonMarkCache> =
+                            std::cell::RefCell::new(egui_commonmark::CommonMarkCache::default());
+                    }
+                    LORE_MD.with(|c| {
+                        egui_commonmark::CommonMarkViewer::new("lore_md")
+                            .show(ui, &mut c.borrow_mut(), body);
+                    });
                 }
                 None => {
                     ui.add_space(20.0);

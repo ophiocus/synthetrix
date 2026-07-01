@@ -9,6 +9,14 @@ app's runtime version is derived from the latest `v*` git tag (`app/build.rs` â†
 
 ## [Unreleased]
 
+## [0.1.11] - 2026-07-01
+
+### Changed
+- **Lore reader now renders markdown instead of showing raw source.** The Lore
+  tab's reader pane displayed the `.md` body as plain monospace text; it now
+  renders it as formatted markdown (headings, bold/italic, lists, tables, code)
+  via `egui_commonmark`. It's a real markdown client, read-only as before.
+
 ## [0.1.10] - 2026-07-01
 
 ### Fixed
