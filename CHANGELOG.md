@@ -9,6 +9,29 @@ app's runtime version is derived from the latest `v*` git tag (`app/build.rs` �
 
 ## [Unreleased]
 
+### Added
+- **Orchestrator overhaul — Synthetrix is now a per-IP production cockpit.** The
+  model harvester grew into the authoritative dashboard + digital vault for a game
+  IP (MOAR / DISCARDED), switchable IDE-style from a top-bar project switcher. The
+  global model vault (`catalog.sqlite`) stays shared; everything IP-scoped lives in
+  a per-IP `project.sqlite` at `<lore_root>/.synthetrix/`. Seven additive phases:
+  - **P0 Project workspace** — `Project` registry + switcher + per-IP DB + Dashboard.
+  - **P1 Service router + Forge core** — `backends/` media bus (Backend trait +
+    local-ComfyUI text→image); Forge tab; per-IP asset vault with provenance
+    sidecars; jobs/assets in `project.sqlite`.
+  - **P2 Multi-modal Asset Manager** — register/browse images/video/audio/meshes
+    per IP; vault scan; opinionated engine placement by topic.
+  - **P3 Prompt Storage Matrix** — per-entity prompt rows + CRUD editor +
+    `prompts.md` import; positive-anchoring lint; feeds the Forge.
+  - **P4 Lore subsystem** — indexes the lore-bible repo (title/summary/vocab) into
+    `lore_index`; Lore tab with kind filters, search, and a read-only reader.
+  - **P5 Composite pipelines** — named build graphs (Character→3D, Prop→3D, Concept
+    art, Voice line) over the bus; Tripo (image→GLB) + ElevenLabs (text→MP3)
+    backends, config-gated; Forge burst (×N seeds); per-stage run tracking.
+  - **P6 Release authority** — freezes (model-layer sha256 snapshot) + ship-cuts
+    (freeze + full asset reproducibility trail); manifests exported to
+    `<lore_root>/.synthetrix/releases/`.
+
 ### Fixed
 - **Params→workflow lost the model when A1111 gave only a hash.** Captured params
   almost always name the checkpoint by `Model hash:` (AutoV2), not a filename, so a
