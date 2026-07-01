@@ -122,12 +122,24 @@ fn download_and_install(url: &str, version: &str) -> Result<PathBuf, String> {
     std::fs::write(&path, &bytes).map_err(|e| format!("Write MSI: {e}"))?;
 
     let msi = path.to_string_lossy();
+    // Install elevated and WAIT for it (`-Wait`), then relaunch the now-upgraded
+    // app at its current path — otherwise the update leaves the user at a closed
+    // window (the app self-closes so the installer can swap the exe).
+    let relaunch = std::env::current_exe()
+        .ok()
+        .map(|p| {
+            format!(
+                "; Start-Sleep -Milliseconds 800; Start-Process -FilePath '{}'",
+                p.display()
+            )
+        })
+        .unwrap_or_default();
     std::process::Command::new("powershell")
         .args([
             "-NoProfile",
             "-Command",
             &format!(
-                "Start-Process msiexec -ArgumentList '/i \"{msi}\" /passive /norestart' -Verb RunAs"
+                "Start-Process msiexec -ArgumentList '/i \"{msi}\" /passive /norestart' -Verb RunAs -Wait{relaunch}"
             ),
         ])
         .spawn()

@@ -9,6 +9,15 @@ app's runtime version is derived from the latest `v*` git tag (`app/build.rs` â†
 
 ## [Unreleased]
 
+## [0.1.8] - 2026-07-01
+
+### Fixed
+- **Self-update now relaunches the app after installing.** The updater self-closes
+  so the MSI can swap the exe, but it never reopened afterward â€” leaving the user
+  at a closed window. `download_and_install` now runs `msiexec` with `-Wait` and
+  then `Start-Process`es the upgraded exe, so the app comes back up on the new
+  version automatically.
+
 ## [0.1.7] - 2026-07-01
 
 ### Changed
