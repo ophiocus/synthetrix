@@ -36,6 +36,13 @@ CREATE TABLE IF NOT EXISTS lore_index (
     title TEXT, summary TEXT, vocab TEXT,
     updated_at TEXT DEFAULT (datetime('now')));
 
+-- composite pipeline runs: a job graph over the media bus (Phase 5)
+CREATE TABLE IF NOT EXISTS pipelines (
+    id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, entity TEXT, notion TEXT,
+    status TEXT, stages TEXT, detail TEXT,
+    created_at TEXT DEFAULT (datetime('now')),
+    updated_at TEXT DEFAULT (datetime('now')));
+
 -- release state / freezes (Phase 6)
 CREATE TABLE IF NOT EXISTS releases (
     id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, kind TEXT, manifest TEXT,
@@ -428,4 +435,70 @@ pub fn parse_prompts_md(entity: &str, text: &str) -> Vec<PromptRow> {
     }
     flush(&mut cur, &mut body, &mut out);
     out
+}
+
+// ---- Pipelines (composite job graphs) -------------------------------------
+
+#[derive(Clone, Default)]
+pub struct PipelineRun {
+    pub id: i64,
+    pub name: String,
+    pub entity: String,
+    pub notion: String,
+    pub status: String,
+    /// JSON array of stage states: [{kind,backend,status,detail,asset_id}].
+    pub stages: String,
+    pub detail: String,
+    pub updated_at: String,
+}
+
+/// Insert a new pipeline run in the "running" state; returns its id.
+pub fn insert_pipeline(
+    conn: &Connection,
+    name: &str,
+    entity: &str,
+    notion: &str,
+    stages: &str,
+) -> i64 {
+    let _ = conn.execute(
+        "INSERT INTO pipelines(name,entity,notion,status,stages,detail)
+         VALUES(?1,?2,?3,'running',?4,'')",
+        rusqlite::params![name, entity, notion, stages],
+    );
+    conn.last_insert_rowid()
+}
+
+/// Update a run's overall status + the per-stage JSON snapshot.
+pub fn update_pipeline(conn: &Connection, id: i64, status: &str, stages: &str, detail: &str) {
+    let _ = conn.execute(
+        "UPDATE pipelines SET status=?1, stages=?2, detail=?3, updated_at=datetime('now')
+         WHERE id=?4",
+        rusqlite::params![status, stages, detail, id],
+    );
+}
+
+fn row_to_pipeline(r: &rusqlite::Row) -> rusqlite::Result<PipelineRun> {
+    Ok(PipelineRun {
+        id: r.get(0)?,
+        name: r.get::<_, Option<String>>(1)?.unwrap_or_default(),
+        entity: r.get::<_, Option<String>>(2)?.unwrap_or_default(),
+        notion: r.get::<_, Option<String>>(3)?.unwrap_or_default(),
+        status: r.get::<_, Option<String>>(4)?.unwrap_or_default(),
+        stages: r.get::<_, Option<String>>(5)?.unwrap_or_default(),
+        detail: r.get::<_, Option<String>>(6)?.unwrap_or_default(),
+        updated_at: r.get::<_, Option<String>>(7)?.unwrap_or_default(),
+    })
+}
+
+pub fn recent_pipelines(conn: &Connection, limit: i64) -> Vec<PipelineRun> {
+    let mut stmt = match conn.prepare(
+        "SELECT id,name,entity,notion,status,stages,detail,updated_at
+         FROM pipelines ORDER BY id DESC LIMIT ?1",
+    ) {
+        Ok(s) => s,
+        Err(_) => return Vec::new(),
+    };
+    stmt.query_map([limit], row_to_pipeline)
+        .map(|rows| rows.filter_map(|r| r.ok()).collect())
+        .unwrap_or_default()
 }

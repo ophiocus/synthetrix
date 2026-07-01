@@ -3,7 +3,9 @@
 //! Cloud (same `/prompt` REST), OpenArt MCP, Tripo, and audio land in later
 //! phases behind this same trait.
 
+pub mod audio;
 pub mod comfy_local;
+pub mod tripo;
 
 /// A text→image generation request (the common subset across backends).
 #[derive(Clone, Debug)]

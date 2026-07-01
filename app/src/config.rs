@@ -82,10 +82,24 @@ pub struct Config {
     // Generation backends.
     #[serde(default = "default_comfy_url")]
     pub comfy_url: String, // local ComfyUI REST base
+    /// Tripo API key for image→3D-mesh stages (empty => stage blocked).
+    #[serde(default)]
+    pub tripo_key: String,
+    /// ElevenLabs API key for text→voice stages (empty => stage blocked).
+    #[serde(default)]
+    pub elevenlabs_key: String,
+    /// ElevenLabs voice id used for voice stages.
+    #[serde(default = "default_eleven_voice")]
+    pub elevenlabs_voice: String,
 }
 
 fn default_comfy_url() -> String {
     "http://127.0.0.1:8188".into()
+}
+
+fn default_eleven_voice() -> String {
+    // ElevenLabs' stock "Rachel" voice — a safe default until the IP sets its own.
+    "21m00Tcm4TlvDq8ikWAM".into()
 }
 
 impl Default for Config {
@@ -120,6 +134,9 @@ impl Default for Config {
             per_model: 20,
             include_video: true,
             comfy_url: default_comfy_url(),
+            tripo_key: String::new(),
+            elevenlabs_key: String::new(),
+            elevenlabs_voice: default_eleven_voice(),
         }
     }
 }

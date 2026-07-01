@@ -13,6 +13,7 @@ pub enum Tab {
     Assets,
     Prompts,
     Lore,
+    Pipelines,
     Fetcher,
     Picker,
     Manifest,
@@ -26,6 +27,15 @@ pub struct PromptsUi {
     pub import_entity: String,
     pub edit: crate::project::PromptRow, // id==0 => new
     pub editing: bool,
+}
+
+/// Composite pipelines tab state: chosen build + notion/entity inputs.
+#[derive(Default)]
+pub struct PipelinesUi {
+    pub selected: String, // pipeline def name
+    pub entity: String,
+    pub prompt: String,
+    pub model: String,
 }
 
 /// Lore subsystem tab state: filter chips + free-text search + open reader.
@@ -58,6 +68,7 @@ pub struct ForgeUi {
     pub sampler: String,
     pub scheduler: String,
     pub seed: String,
+    pub burst: u32,
 }
 
 impl Default for ForgeUi {
@@ -74,6 +85,7 @@ impl Default for ForgeUi {
             sampler: "dpmpp_2m".into(),
             scheduler: "karras".into(),
             seed: "-1".into(),
+            burst: 4,
         }
     }
 }
@@ -219,6 +231,9 @@ pub struct SynthetrixApp {
     pub lore_ui: LoreUi,
     pub lore: Vec<crate::lore::LoreEntry>,
     pub lore_kinds: Vec<String>,
+    /// Composite pipelines state.
+    pub pipelines_ui: PipelinesUi,
+    pub pipeline_runs: Vec<crate::project::PipelineRun>,
 
     pub status: Option<String>,
     pub busy: bool,
@@ -291,6 +306,8 @@ impl SynthetrixApp {
             lore_ui: LoreUi::default(),
             lore: Vec::new(),
             lore_kinds: Vec::new(),
+            pipelines_ui: PipelinesUi::default(),
+            pipeline_runs: Vec::new(),
             status: None,
             busy: false,
             sync: None,
@@ -388,6 +405,9 @@ impl SynthetrixApp {
                 Event::LoreText { entry, body } => {
                     self.lore_ui.open = Some((entry, body));
                 }
+                Event::Pipelines(rows) => {
+                    self.pipeline_runs = rows;
+                }
                 Event::Error(e) => {
                     let msg = format!("⚠ {e}");
                     self.log.push(msg.clone());
@@ -444,6 +464,7 @@ impl eframe::App for SynthetrixApp {
                 ui.selectable_value(&mut self.tab, Tab::Assets, "🎞 Assets");
                 ui.selectable_value(&mut self.tab, Tab::Prompts, "✎ Prompts");
                 ui.selectable_value(&mut self.tab, Tab::Lore, "📖 Lore");
+                ui.selectable_value(&mut self.tab, Tab::Pipelines, "⛓ Pipelines");
                 ui.selectable_value(&mut self.tab, Tab::Fetcher, "⬇ Fetcher");
                 ui.selectable_value(&mut self.tab, Tab::Picker, "☑ Picker");
                 ui.selectable_value(&mut self.tab, Tab::Manifest, "🗂 Manifest");
@@ -512,6 +533,7 @@ impl eframe::App for SynthetrixApp {
             Tab::Assets => crate::tabs::assets(self, ui),
             Tab::Prompts => crate::tabs::prompts(self, ui),
             Tab::Lore => crate::tabs::lore(self, ui),
+            Tab::Pipelines => crate::tabs::pipelines(self, ui),
             Tab::Fetcher => crate::tabs::fetcher(self, ui),
             Tab::Picker => crate::tabs::picker(self, ui),
             Tab::Manifest => crate::tabs::manifest(self, ui),

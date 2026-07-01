@@ -55,6 +55,20 @@ pub enum Cmd {
     },
     /// Lore: read one entry's full markdown for the reader panel.
     ReadLore(i64),
+    /// Forge: burst — generate `count` image variations across seeds.
+    RunBurst {
+        req: GenRequest,
+        entity: String,
+        count: u32,
+    },
+    /// Composite pipeline: run a named build graph for an entity.
+    RunPipeline {
+        name: String,
+        entity: String,
+        req: GenRequest,
+    },
+    /// Refresh the Pipelines tab's run list.
+    QueryPipelines,
     Sync,
     QueryPicks(db::PickFilter),
     QueryManifest,
@@ -107,6 +121,8 @@ pub enum Event {
         entry: crate::lore::LoreEntry,
         body: String,
     },
+    /// Composite pipeline run list.
+    Pipelines(Vec<project::PipelineRun>),
     Error(String),
 }
 
@@ -306,6 +322,9 @@ fn handle(st: &mut State, cmd: Cmd) {
         Cmd::ReindexLore => reindex_lore(st),
         Cmd::QueryLore { kind, search } => query_lore_cmd(st, kind, search),
         Cmd::ReadLore(id) => read_lore(st, id),
+        Cmd::RunBurst { req, entity, count } => run_burst(st, req, entity, count),
+        Cmd::RunPipeline { name, entity, req } => run_pipeline(st, name, entity, req),
+        Cmd::QueryPipelines => refresh_pipelines(st),
         Cmd::QueryPicks(f) => {
             if let Some(conn) = &st.conn {
                 match db::query_picks(conn, &f) {
@@ -382,6 +401,7 @@ fn set_project(st: &mut State, p: Project) {
                 }
             }
             query_lore_cmd(st, None, None);
+            refresh_pipelines(st);
             st.status(format!("project: {}", p.name));
         }
         Err(e) => {
@@ -456,50 +476,40 @@ fn generate(st: &mut State, req: GenRequest, entity: String) {
 
     match res {
         Ok(gen) => {
-            let ext = match gen.content_type.as_str() {
-                "image/jpeg" => "jpg",
-                "image/webp" => "webp",
-                _ => "png",
-            };
-            let dir = project.asset_vault_path().join("images");
-            let _ = std::fs::create_dir_all(&dir);
+            let ext = image_ext(&gen.content_type);
             let stem = format!("{ent}_{job_id}");
-            let path = dir.join(format!("{stem}.{ext}"));
-            if let Err(e) = std::fs::write(&path, &gen.bytes) {
-                if let Some(c) = &st.project_conn {
-                    project::update_job(c, job_id, "failed", None, &format!("write: {e}"));
+            match store_asset(
+                st,
+                &project,
+                "image",
+                "images",
+                &stem,
+                ext,
+                &gen.bytes,
+                &gen.content_type,
+                &ent,
+                &gen.meta,
+                job_id,
+            ) {
+                Ok((_id, pstr)) => {
+                    if let Some(c) = &st.project_conn {
+                        project::update_job(
+                            c,
+                            job_id,
+                            "done",
+                            Some(&pstr),
+                            &format!("seed {}", gen.seed),
+                        );
+                    }
+                    st.status(format!("forge: saved {stem}.{ext} (seed {})", gen.seed));
                 }
-                st.emit(Event::Error(format!("forge save: {e}")));
-                refresh_forge(st);
-                return;
+                Err(e) => {
+                    if let Some(c) = &st.project_conn {
+                        project::update_job(c, job_id, "failed", None, &format!("write: {e}"));
+                    }
+                    st.emit(Event::Error(format!("forge save: {e}")));
+                }
             }
-            let _ = std::fs::write(
-                dir.join(format!("{stem}.json")),
-                serde_json::to_string_pretty(&gen.meta).unwrap_or_default(),
-            );
-            let sha = sha256_bytes(&gen.bytes);
-            let pstr = path.to_string_lossy().into_owned();
-            if let Some(c) = &st.project_conn {
-                project::insert_asset(
-                    c,
-                    "image",
-                    &format!("{stem}.{ext}"),
-                    &ent,
-                    &gen.content_type,
-                    &pstr,
-                    &sha,
-                    &gen.meta.to_string(),
-                    job_id,
-                );
-                project::update_job(
-                    c,
-                    job_id,
-                    "done",
-                    Some(&pstr),
-                    &format!("seed {}", gen.seed),
-                );
-            }
-            st.status(format!("forge: saved {stem}.{ext} (seed {})", gen.seed));
         }
         Err(e) => {
             if let Some(c) = &st.project_conn {
@@ -510,6 +520,59 @@ fn generate(st: &mut State, req: GenRequest, entity: String) {
     }
     refresh_forge(st);
     emit_project_info(st);
+}
+
+fn image_ext(content_type: &str) -> &'static str {
+    match content_type {
+        "image/jpeg" => "jpg",
+        "image/webp" => "webp",
+        _ => "png",
+    }
+}
+
+/// Write produced media into the IP asset vault (`<vault>/<subdir>/<stem>.<ext>`)
+/// with a JSON provenance sidecar, hash it, and register the asset. Returns
+/// (asset_id, absolute_path).
+#[allow(clippy::too_many_arguments)]
+fn store_asset(
+    st: &State,
+    project: &Project,
+    kind: &str,
+    subdir: &str,
+    stem: &str,
+    ext: &str,
+    bytes: &[u8],
+    content_type: &str,
+    entity: &str,
+    meta: &serde_json::Value,
+    job_id: i64,
+) -> Result<(i64, String), String> {
+    let dir = project.asset_vault_path().join(subdir);
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    let name = format!("{stem}.{ext}");
+    let path = dir.join(&name);
+    std::fs::write(&path, bytes).map_err(|e| e.to_string())?;
+    let _ = std::fs::write(
+        dir.join(format!("{stem}.json")),
+        serde_json::to_string_pretty(meta).unwrap_or_default(),
+    );
+    let sha = sha256_bytes(bytes);
+    let pstr = path.to_string_lossy().into_owned();
+    let id = match &st.project_conn {
+        Some(c) => project::insert_asset(
+            c,
+            kind,
+            &name,
+            entity,
+            content_type,
+            &pstr,
+            &sha,
+            &meta.to_string(),
+            job_id,
+        ),
+        None => 0,
+    };
+    Ok((id, pstr))
 }
 
 fn sha256_bytes(bytes: &[u8]) -> String {
@@ -764,6 +827,341 @@ fn read_lore(st: &State, id: i64) {
     match std::fs::read_to_string(&path) {
         Ok(body) => st.emit(Event::LoreText { entry, body }),
         Err(e) => st.emit(Event::Error(format!("read {}: {e}", entry.rel_path))),
+    }
+}
+
+// ---- Phase 5: Composite pipelines + burst ---------------------------------
+
+struct ImageOut {
+    asset_id: i64,
+    bytes: Vec<u8>,
+    content_type: String,
+    seed: i64,
+}
+
+fn resolve_entity(entity: &str) -> String {
+    let e = entity.trim();
+    if e.is_empty() {
+        "untitled".to_string()
+    } else {
+        e.to_string()
+    }
+}
+
+/// Run one text→image generation through the local ComfyUI backend and store it
+/// in the IP vault. Shared by Forge single-shot, burst, and the pipeline runner.
+fn run_image_once(
+    st: &mut State,
+    project: &Project,
+    req: &GenRequest,
+    entity: &str,
+) -> Result<ImageOut, String> {
+    let params = serde_json::to_string(&serde_json::json!({
+        "model": req.model, "negative": req.negative, "width": req.width,
+        "height": req.height, "steps": req.steps, "cfg": req.cfg,
+        "sampler": req.sampler, "scheduler": req.scheduler, "seed": req.seed
+    }))
+    .unwrap_or_default();
+    let mut backend = backends::backend_for("comfy_local", &st.cfg.comfy_url);
+    let job_id = match &st.project_conn {
+        Some(c) => project::insert_job(c, "image", backend.id(), entity, &req.prompt, &params),
+        None => 0,
+    };
+    refresh_forge(st);
+    let ctx = st.ctx.clone();
+    let tx = st.tx.clone();
+    let res = backend.generate_image(req, &mut |frac, note| {
+        let _ = tx.send(Event::Status(format!("forge: {note} {:.0}%", frac * 100.0)));
+        ctx.request_repaint();
+    });
+    match res {
+        Ok(gen) => {
+            let ext = image_ext(&gen.content_type);
+            let stem = format!("{entity}_{job_id}");
+            let (id, pstr) = store_asset(
+                st,
+                project,
+                "image",
+                "images",
+                &stem,
+                ext,
+                &gen.bytes,
+                &gen.content_type,
+                entity,
+                &gen.meta,
+                job_id,
+            )?;
+            if let Some(c) = &st.project_conn {
+                project::update_job(
+                    c,
+                    job_id,
+                    "done",
+                    Some(&pstr),
+                    &format!("seed {}", gen.seed),
+                );
+            }
+            Ok(ImageOut {
+                asset_id: id,
+                bytes: gen.bytes,
+                content_type: gen.content_type,
+                seed: gen.seed,
+            })
+        }
+        Err(e) => {
+            if let Some(c) = &st.project_conn {
+                project::update_job(c, job_id, "failed", None, &e);
+            }
+            Err(e)
+        }
+    }
+}
+
+/// Burst: generate `count` image variations. Seeds walk from the request's base
+/// (or stay random when the base is < 0), so a burst spans the seed neighbourhood.
+fn run_burst(st: &mut State, req: GenRequest, entity: String, count: u32) {
+    let Some(project) = st.active_project.clone() else {
+        st.emit(Event::Error("no project open — pick an IP first".into()));
+        return;
+    };
+    if st.project_conn.is_none() {
+        st.emit(Event::Error("project DB not open".into()));
+        return;
+    }
+    let ent = resolve_entity(&entity);
+    let n = count.clamp(1, 24);
+    let base = req.seed;
+    st.emit(Event::Busy(true));
+    let mut ok = 0usize;
+    for i in 0..n {
+        let seed = if base < 0 { -1 } else { base + i as i64 };
+        let r = GenRequest {
+            seed,
+            ..req.clone()
+        };
+        st.status(format!("burst {}/{n}", i + 1));
+        match run_image_once(st, &project, &r, &ent) {
+            Ok(o) => {
+                ok += 1;
+                st.emit(Event::Log(format!(
+                    "✔ burst {}/{n} (seed {})",
+                    i + 1,
+                    o.seed
+                )));
+            }
+            Err(e) => st.emit(Event::Log(format!("✘ burst {}/{n}: {e}", i + 1))),
+        }
+        st.emit(Event::Progress(i as usize + 1, n as usize, ok, 0));
+    }
+    st.emit(Event::Busy(false));
+    st.status(format!("burst: {ok}/{n} images for {ent}"));
+    refresh_forge(st);
+    emit_project_info(st);
+}
+
+/// Copy the asset produced by an earlier stage into the IP engine tree under a
+/// topic. Returns the destination path.
+fn place_into_engine(
+    st: &State,
+    project: &Project,
+    asset_id: i64,
+    topic: &str,
+) -> Result<String, String> {
+    if project.engine_root.trim().is_empty() {
+        return Err("no engine root set for this IP (Settings)".into());
+    }
+    let row = st
+        .project_conn
+        .as_ref()
+        .and_then(|c| project::asset_by_id(c, asset_id))
+        .ok_or("asset not found")?;
+    let src = Path::new(&row.path);
+    if !src.is_file() {
+        return Err("asset file missing on disk".into());
+    }
+    let dir = Path::new(&project.engine_root)
+        .join("Content")
+        .join("Generated")
+        .join(topic);
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    let dest = dir.join(&row.name);
+    std::fs::copy(src, &dest).map_err(|e| e.to_string())?;
+    let dp = dest.to_string_lossy().into_owned();
+    if let Some(c) = &st.project_conn {
+        project::set_engine_path(c, asset_id, &dp);
+    }
+    Ok(dp)
+}
+
+/// Run a named composite pipeline as a job graph, recording per-stage state in
+/// `project.sqlite`. Stages whose backend isn't configured (or that need an
+/// engine root) stop the run with a `blocked` state + reason rather than a
+/// silent skip.
+fn run_pipeline(st: &mut State, name: String, entity: String, req: GenRequest) {
+    use crate::pipelines::{self, StageKind};
+    let Some(project) = st.active_project.clone() else {
+        st.emit(Event::Error("no project open — pick an IP first".into()));
+        return;
+    };
+    if st.project_conn.is_none() {
+        st.emit(Event::Error("project DB not open".into()));
+        return;
+    }
+    let Some(def) = pipelines::by_name(&name) else {
+        st.emit(Event::Error(format!("unknown pipeline: {name}")));
+        return;
+    };
+    let ent = resolve_entity(&entity);
+    let mut states = pipelines::initial_states(&def);
+    let run_id = match &st.project_conn {
+        Some(c) => {
+            project::insert_pipeline(c, &name, &ent, &req.prompt, &pipelines::to_json(&states))
+        }
+        None => 0,
+    };
+    refresh_pipelines(st);
+    st.emit(Event::Busy(true));
+
+    let mut last_image: Option<(Vec<u8>, String)> = None;
+    let mut last_asset: i64 = 0;
+    let mut overall = "done";
+
+    for i in 0..states.len() {
+        states[i].status = "running".into();
+        if let Some(c) = &st.project_conn {
+            project::update_pipeline(c, run_id, "running", &pipelines::to_json(&states), "");
+        }
+        refresh_pipelines(st);
+        st.status(format!("{name}: stage {}/{}", i + 1, states.len()));
+
+        let outcome: Result<i64, String> =
+            match states[i].kind {
+                StageKind::Image => run_image_once(st, &project, &req, &ent).map(|o| {
+                    last_image = Some((o.bytes, o.content_type));
+                    last_asset = o.asset_id;
+                    o.asset_id
+                }),
+                StageKind::Mesh => {
+                    let tripo = backends::tripo::Tripo::new(&st.cfg.tripo_key);
+                    match last_image.clone() {
+                        _ if !tripo.configured() => Err("Tripo key not set (Settings)".into()),
+                        None => Err("no upstream image to mesh".into()),
+                        Some((bytes, ct)) => {
+                            let ctx = st.ctx.clone();
+                            let tx = st.tx.clone();
+                            tripo
+                            .image_to_mesh(&bytes, &ct, &mut |f, note| {
+                                let _ = tx.send(Event::Status(format!(
+                                    "tripo: {note} {:.0}%",
+                                    f * 100.0
+                                )));
+                                ctx.request_repaint();
+                            })
+                            .and_then(|glb| {
+                                let stem = format!("{ent}_{run_id}");
+                                let meta = serde_json::json!({
+                                    "backend": "tripo", "source": "image_to_model", "entity": ent
+                                });
+                                store_asset(
+                                    st, &project, "mesh", "meshes", &stem, "glb", &glb,
+                                    "model/gltf-binary", &ent, &meta, 0,
+                                )
+                                .map(|(id, _)| {
+                                    last_asset = id;
+                                    id
+                                })
+                            })
+                        }
+                    }
+                }
+                StageKind::Voice => {
+                    let eleven = backends::audio::ElevenLabs::new(
+                        &st.cfg.elevenlabs_key,
+                        &st.cfg.elevenlabs_voice,
+                    );
+                    if !eleven.configured() {
+                        Err("ElevenLabs key/voice not set (Settings)".into())
+                    } else {
+                        let ctx = st.ctx.clone();
+                        let tx = st.tx.clone();
+                        eleven
+                            .text_to_speech(&req.prompt, &mut |f, note| {
+                                let _ = tx.send(Event::Status(format!(
+                                    "voice: {note} {:.0}%",
+                                    f * 100.0
+                                )));
+                                ctx.request_repaint();
+                            })
+                            .and_then(|mp3| {
+                                let stem = format!("{ent}_{run_id}");
+                                let meta = serde_json::json!({
+                                    "backend": "elevenlabs", "voice": st.cfg.elevenlabs_voice,
+                                    "text": req.prompt, "entity": ent
+                                });
+                                store_asset(
+                                    st,
+                                    &project,
+                                    "audio",
+                                    "audio",
+                                    &stem,
+                                    "mp3",
+                                    &mp3,
+                                    "audio/mpeg",
+                                    &ent,
+                                    &meta,
+                                    0,
+                                )
+                                .map(|(id, _)| {
+                                    last_asset = id;
+                                    id
+                                })
+                            })
+                    }
+                }
+                StageKind::Place => {
+                    if last_asset == 0 {
+                        Err("no upstream asset to place".into())
+                    } else {
+                        place_into_engine(st, &project, last_asset, &states[i].topic)
+                            .map(|_| last_asset)
+                    }
+                }
+            };
+
+        match outcome {
+            Ok(id) => {
+                states[i].status = "done".into();
+                states[i].asset_id = id;
+            }
+            Err(e) => {
+                let blocked = e.contains("not set") || e.contains("no engine");
+                states[i].status = if blocked { "blocked" } else { "failed" }.into();
+                states[i].detail = e.clone();
+                overall = if blocked { "blocked" } else { "failed" };
+                if let Some(c) = &st.project_conn {
+                    project::update_pipeline(c, run_id, overall, &pipelines::to_json(&states), &e);
+                }
+                st.emit(Event::Log(format!("⏹ {name} stage {}: {e}", i + 1)));
+                break;
+            }
+        }
+        if let Some(c) = &st.project_conn {
+            project::update_pipeline(c, run_id, "running", &pipelines::to_json(&states), "");
+        }
+    }
+
+    if let Some(c) = &st.project_conn {
+        project::update_pipeline(c, run_id, overall, &pipelines::to_json(&states), "");
+    }
+    st.emit(Event::Busy(false));
+    st.status(format!("pipeline {name}: {overall}"));
+    refresh_pipelines(st);
+    refresh_forge(st);
+    emit_project_info(st);
+}
+
+fn refresh_pipelines(st: &State) {
+    if let Some(c) = &st.project_conn {
+        st.emit(Event::Pipelines(project::recent_pipelines(c, 50)));
     }
 }
 

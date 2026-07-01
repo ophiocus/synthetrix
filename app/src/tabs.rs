@@ -204,6 +204,7 @@ pub fn forge(app: &mut SynthetrixApp, ui: &mut egui::Ui) {
     let ready = !app.forge_ui.prompt.trim().is_empty()
         && !app.forge_ui.model.trim().is_empty()
         && !app.busy;
+    let mut burst = false;
     ui.horizontal(|ui| {
         if ui
             .add_enabled(
@@ -213,6 +214,20 @@ pub fn forge(app: &mut SynthetrixApp, ui: &mut egui::Ui) {
             .clicked()
         {
             submit = true;
+        }
+        ui.separator();
+        ui.add(
+            egui::DragValue::new(&mut app.forge_ui.burst)
+                .range(2..=24)
+                .prefix("×"),
+        )
+        .on_hover_text("burst count: how many seed variations to generate");
+        if ui
+            .add_enabled(ready, egui::Button::new("⚡ Burst"))
+            .on_hover_text("generate N variations across seeds")
+            .clicked()
+        {
+            burst = true;
         }
         if app.busy {
             ui.spinner();
@@ -226,7 +241,7 @@ pub fn forge(app: &mut SynthetrixApp, ui: &mut egui::Ui) {
             app.send(Cmd::QueryForge);
         }
     });
-    if submit {
+    if submit || burst {
         let fu = &app.forge_ui;
         let req = crate::backends::GenRequest {
             prompt: fu.prompt.clone(),
@@ -241,7 +256,15 @@ pub fn forge(app: &mut SynthetrixApp, ui: &mut egui::Ui) {
             seed: fu.seed.trim().parse().unwrap_or(-1),
         };
         let entity = fu.entity.clone();
-        app.send(Cmd::Generate { req, entity });
+        if burst {
+            app.send(Cmd::RunBurst {
+                req,
+                entity,
+                count: fu.burst,
+            });
+        } else {
+            app.send(Cmd::Generate { req, entity });
+        }
     }
 
     ui.separator();
@@ -834,6 +857,171 @@ pub fn lore(app: &mut SynthetrixApp, ui: &mut egui::Ui) {
         app.prompts_ui.import_entity = name;
         app.tab = crate::app::Tab::Prompts;
     }
+}
+
+// ---- Pipelines -------------------------------------------------------------
+
+fn stage_color(status: &str) -> egui::Color32 {
+    match status {
+        "done" => egui::Color32::from_rgb(80, 200, 120),
+        "running" => egui::Color32::from_rgb(90, 160, 240),
+        "blocked" => egui::Color32::from_rgb(230, 170, 60),
+        "failed" => egui::Color32::from_rgb(220, 100, 100),
+        _ => egui::Color32::GRAY,
+    }
+}
+
+pub fn pipelines(app: &mut SynthetrixApp, ui: &mut egui::Ui) {
+    ui.add_space(8.0);
+    ui.heading("Pipelines — composite prompt→asset builds");
+    if app.project_info.is_none() {
+        ui.add_space(16.0);
+        ui.weak("No project open. Pick an IP from the switcher (top-right) first.");
+        return;
+    }
+    let defs = crate::pipelines::builtin();
+    if app.pipelines_ui.selected.is_empty() {
+        if let Some(first) = defs.first() {
+            app.pipelines_ui.selected = first.name.to_string();
+        }
+    }
+    let tripo_ok = !app.config.tripo_key.trim().is_empty();
+    let eleven_ok = !app.config.elevenlabs_key.trim().is_empty();
+    ui.weak(format!(
+        "3D (Tripo): {}   ·   Voice (ElevenLabs): {}   — set keys in Settings",
+        if tripo_ok { "✔ ready" } else { "✘ not set" },
+        if eleven_ok {
+            "✔ ready"
+        } else {
+            "✘ not set"
+        },
+    ));
+    ui.separator();
+
+    // pick a pipeline + show its stage chain
+    let mut run = false;
+    {
+        let pu = &mut app.pipelines_ui;
+        ui.horizontal_wrapped(|ui| {
+            ui.label("Build:");
+            egui::ComboBox::from_id_source("pipeline_pick")
+                .selected_text(pu.selected.clone())
+                .show_ui(ui, |ui| {
+                    for d in &defs {
+                        ui.selectable_value(&mut pu.selected, d.name.to_string(), d.name);
+                    }
+                });
+        });
+    }
+    if let Some(def) = defs.iter().find(|d| d.name == app.pipelines_ui.selected) {
+        ui.horizontal_wrapped(|ui| {
+            for (i, s) in def.stages.iter().enumerate() {
+                if i > 0 {
+                    ui.label("→");
+                }
+                ui.label(format!("{} {}", s.kind.glyph(), s.kind.label()));
+            }
+        });
+        ui.weak(def.description);
+    }
+    ui.separator();
+
+    {
+        let pu = &mut app.pipelines_ui;
+        egui::Grid::new("pipe_form")
+            .num_columns(2)
+            .spacing([10.0, 4.0])
+            .show(ui, |ui| {
+                ui.label("Entity");
+                ui.add(egui::TextEdit::singleline(&mut pu.entity).desired_width(220.0))
+                    .on_hover_text("asset name stem, e.g. drop-pod");
+                ui.end_row();
+                ui.label("Model (ckpt)");
+                ui.add(egui::TextEdit::singleline(&mut pu.model).desired_width(280.0))
+                    .on_hover_text("checkpoint for the image stage");
+                ui.end_row();
+            });
+        ui.label("Notion / prompt (image + voice text):");
+        ui.add(
+            egui::TextEdit::multiline(&mut pu.prompt)
+                .desired_rows(3)
+                .desired_width(f32::INFINITY),
+        );
+    }
+    ui.add_space(6.0);
+    let ready = !app.pipelines_ui.prompt.trim().is_empty() && !app.busy;
+    ui.horizontal(|ui| {
+        if ui
+            .add_enabled(
+                ready,
+                egui::Button::new("▶ Run pipeline").min_size(egui::vec2(160.0, 30.0)),
+            )
+            .clicked()
+        {
+            run = true;
+        }
+        if app.busy {
+            ui.spinner();
+        }
+        if ui.button("↻").on_hover_text("refresh runs").clicked() {
+            app.send(Cmd::QueryPipelines);
+        }
+    });
+    if run {
+        let pu = &app.pipelines_ui;
+        let req = crate::backends::GenRequest {
+            prompt: pu.prompt.clone(),
+            model: pu.model.trim().to_string(),
+            ..Default::default()
+        };
+        app.send(Cmd::RunPipeline {
+            name: pu.selected.clone(),
+            entity: pu.entity.clone(),
+            req,
+        });
+    }
+
+    ui.separator();
+    ui.label(egui::RichText::new("Runs").weak());
+    egui::ScrollArea::vertical().show(ui, |ui| {
+        for r in &app.pipeline_runs {
+            ui.horizontal_wrapped(|ui| {
+                ui.colored_label(stage_color(&r.status), format!("#{} {}", r.id, r.status));
+                ui.strong(&r.name).on_hover_text(if r.notion.is_empty() {
+                    "(no notion recorded)".to_string()
+                } else {
+                    r.notion.clone()
+                });
+                if !r.entity.is_empty() {
+                    ui.label(&r.entity);
+                }
+                // stage chips
+                for s in crate::pipelines::from_json(&r.stages) {
+                    let chip = format!("{} {}", s.kind.glyph(), s.status);
+                    ui.colored_label(stage_color(&s.status), chip)
+                        .on_hover_text(if s.detail.is_empty() {
+                            format!("{} · {}", s.kind.label(), s.backend)
+                        } else {
+                            s.detail.clone()
+                        });
+                }
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    ui.weak(&r.updated_at);
+                });
+            });
+            if !r.detail.is_empty() {
+                ui.horizontal_wrapped(|ui| {
+                    ui.add_space(14.0);
+                    ui.colored_label(egui::Color32::from_rgb(230, 170, 60), &r.detail);
+                });
+            }
+            ui.separator();
+        }
+        if app.pipeline_runs.is_empty() {
+            ui.add_space(12.0);
+            ui.weak("No pipeline runs yet. Pick a build above and Run.");
+        }
+    });
 }
 
 // ---- Fetcher ---------------------------------------------------------------
@@ -1738,6 +1926,31 @@ pub fn settings(app: &mut SynthetrixApp, ui: &mut egui::Ui) {
                 ui.end_row();
                 ui.label("NVMe root");
                 ui.add(egui::TextEdit::singleline(&mut cfg.nvme_root).desired_width(440.0));
+                ui.end_row();
+            });
+
+            ui.add_space(8.0);
+            ui.label("Generation backends");
+            egui::Grid::new("backends").num_columns(2).show(ui, |ui| {
+                ui.label("Local ComfyUI URL");
+                ui.add(egui::TextEdit::singleline(&mut cfg.comfy_url).desired_width(440.0));
+                ui.end_row();
+                ui.label("Tripo API key (3D)");
+                ui.add(
+                    egui::TextEdit::singleline(&mut cfg.tripo_key)
+                        .desired_width(440.0)
+                        .password(true),
+                );
+                ui.end_row();
+                ui.label("ElevenLabs API key (voice)");
+                ui.add(
+                    egui::TextEdit::singleline(&mut cfg.elevenlabs_key)
+                        .desired_width(440.0)
+                        .password(true),
+                );
+                ui.end_row();
+                ui.label("ElevenLabs voice id");
+                ui.add(egui::TextEdit::singleline(&mut cfg.elevenlabs_voice).desired_width(440.0));
                 ui.end_row();
             });
 
