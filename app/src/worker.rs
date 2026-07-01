@@ -37,6 +37,15 @@ pub enum Cmd {
         id: i64,
         topic: String,
     },
+    /// Prompt matrix: browse / save / delete / import-from-prompts.md.
+    QueryPrompts {
+        entity: Option<String>,
+    },
+    SavePrompt(project::PromptRow),
+    DeletePrompt(i64),
+    ImportPrompts {
+        entity: String,
+    },
     Sync,
     QueryPicks(db::PickFilter),
     QueryManifest,
@@ -77,6 +86,8 @@ pub enum Event {
     },
     /// Asset manager browse results.
     Assets(Vec<project::AssetRow>),
+    /// Prompt matrix rows.
+    Prompts(Vec<project::PromptRow>),
     Error(String),
 }
 
@@ -257,6 +268,22 @@ fn handle(st: &mut State, cmd: Cmd) {
         Cmd::ScanAssets => scan_assets(st),
         Cmd::QueryAssets { kind, entity } => query_assets_cmd(st, kind, entity),
         Cmd::PlaceAsset { id, topic } => place_asset(st, id, topic),
+        Cmd::QueryPrompts { entity } => query_prompts_cmd(st, entity),
+        Cmd::SavePrompt(p) => {
+            if let Some(c) = &st.project_conn {
+                project::upsert_prompt(c, &p);
+            }
+            query_prompts_cmd(st, None);
+            emit_project_info(st);
+        }
+        Cmd::DeletePrompt(id) => {
+            if let Some(c) = &st.project_conn {
+                project::delete_prompt(c, id);
+            }
+            query_prompts_cmd(st, None);
+            emit_project_info(st);
+        }
+        Cmd::ImportPrompts { entity } => import_prompts(st, entity),
         Cmd::QueryPicks(f) => {
             if let Some(conn) = &st.conn {
                 match db::query_picks(conn, &f) {
@@ -323,6 +350,7 @@ fn set_project(st: &mut State, p: Project) {
             emit_project_info(st);
             refresh_forge(st);
             query_assets_cmd(st, None, None);
+            query_prompts_cmd(st, None);
             st.status(format!("project: {}", p.name));
         }
         Err(e) => {
@@ -574,6 +602,78 @@ fn place_asset(st: &mut State, id: i64, topic: String) {
         Err(e) => st.emit(Event::Error(format!("place: {e}"))),
     }
     query_assets_cmd(st, None, None);
+}
+
+// ---- Phase 3: Prompt Matrix ------------------------------------------------
+
+fn query_prompts_cmd(st: &State, entity: Option<String>) {
+    if let Some(c) = &st.project_conn {
+        let rows = project::query_prompts(c, entity.as_deref().filter(|s| !s.is_empty()), 500);
+        st.emit(Event::Prompts(rows));
+    }
+}
+
+/// Import a per-entity `prompts.md` from the lore repo into the prompt matrix.
+fn import_prompts(st: &mut State, entity: String) {
+    let Some(project) = st.active_project.clone() else {
+        st.emit(Event::Error("no project open".into()));
+        return;
+    };
+    let ent = entity.trim().to_string();
+    if ent.is_empty() {
+        st.emit(Event::Error("enter an entity name to import".into()));
+        return;
+    }
+    // find <lore_root>/**/<entity>/prompts.md
+    let mut found = None;
+    let mut stack = vec![std::path::PathBuf::from(&project.lore_root)];
+    'walk: while let Some(dir) = stack.pop() {
+        let Ok(rd) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+        for e in rd.flatten() {
+            let p = e.path();
+            if !p.is_dir() {
+                continue;
+            }
+            let dn = p.file_name().and_then(|n| n.to_str()).unwrap_or("");
+            if dn.starts_with('.') {
+                continue;
+            }
+            if dn.eq_ignore_ascii_case(&ent) {
+                let pm = p.join("prompts.md");
+                if pm.is_file() {
+                    found = Some(pm);
+                    break 'walk;
+                }
+            }
+            stack.push(p);
+        }
+    }
+    let Some(pm) = found else {
+        st.emit(Event::Error(format!(
+            "no <{ent}>/prompts.md found under {}",
+            project.lore_root
+        )));
+        return;
+    };
+    let text = match std::fs::read_to_string(&pm) {
+        Ok(t) => t,
+        Err(e) => {
+            st.emit(Event::Error(format!("read prompts.md: {e}")));
+            return;
+        }
+    };
+    let rows = project::parse_prompts_md(&ent, &text);
+    let n = rows.len();
+    if let Some(c) = &st.project_conn {
+        for r in &rows {
+            project::upsert_prompt(c, r);
+        }
+    }
+    st.status(format!("imported {n} prompts for {ent}"));
+    query_prompts_cmd(st, None);
+    emit_project_info(st);
 }
 
 const QUERIES: [(&str, &str); 3] = [

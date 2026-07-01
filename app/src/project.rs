@@ -289,3 +289,143 @@ pub fn insert_asset(
 pub fn recent_assets(conn: &Connection, limit: i64) -> Vec<AssetRow> {
     query_assets(conn, None, None, limit)
 }
+
+// ---- Prompts (the prompt storage matrix) ----------------------------------
+
+#[derive(Clone, Default)]
+pub struct PromptRow {
+    pub id: i64,
+    pub entity: String,
+    pub slot: String,  // e.g. "Full Body Photoreal"
+    pub stage: String, // "2d" | "video" | "voice" | "3d"
+    pub backend: String,
+    pub model: String,
+    pub body: String,
+    pub params: String,
+    pub notes: String,
+    pub updated_at: String,
+}
+
+fn row_to_prompt(r: &rusqlite::Row) -> rusqlite::Result<PromptRow> {
+    Ok(PromptRow {
+        id: r.get(0)?,
+        entity: r.get::<_, Option<String>>(1)?.unwrap_or_default(),
+        slot: r.get::<_, Option<String>>(2)?.unwrap_or_default(),
+        stage: r.get::<_, Option<String>>(3)?.unwrap_or_default(),
+        backend: r.get::<_, Option<String>>(4)?.unwrap_or_default(),
+        model: r.get::<_, Option<String>>(5)?.unwrap_or_default(),
+        body: r.get::<_, Option<String>>(6)?.unwrap_or_default(),
+        params: r.get::<_, Option<String>>(7)?.unwrap_or_default(),
+        notes: r.get::<_, Option<String>>(8)?.unwrap_or_default(),
+        updated_at: r.get::<_, Option<String>>(9)?.unwrap_or_default(),
+    })
+}
+
+const PROMPT_COLS: &str = "id,entity,slot,stage,backend,model,body,params,notes,updated_at";
+
+pub fn query_prompts(conn: &Connection, entity: Option<&str>, limit: i64) -> Vec<PromptRow> {
+    let mut sql = format!("SELECT {PROMPT_COLS} FROM prompts WHERE 1=1");
+    if let Some(e) = entity {
+        sql.push_str(&format!(" AND entity LIKE '%{}%'", e.replace('\'', "''")));
+    }
+    sql.push_str(&format!(" ORDER BY entity, slot LIMIT {limit}"));
+    let mut stmt = match conn.prepare(&sql) {
+        Ok(s) => s,
+        Err(_) => return Vec::new(),
+    };
+    stmt.query_map([], row_to_prompt)
+        .map(|rows| rows.filter_map(|r| r.ok()).collect())
+        .unwrap_or_default()
+}
+
+/// Insert (id==0) or update a prompt; returns its id.
+pub fn upsert_prompt(conn: &Connection, p: &PromptRow) -> i64 {
+    if p.id > 0 {
+        let _ = conn.execute(
+            "UPDATE prompts SET entity=?1,slot=?2,stage=?3,backend=?4,model=?5,
+                body=?6,params=?7,notes=?8,updated_at=datetime('now') WHERE id=?9",
+            rusqlite::params![
+                p.entity, p.slot, p.stage, p.backend, p.model, p.body, p.params, p.notes, p.id
+            ],
+        );
+        p.id
+    } else {
+        let _ = conn.execute(
+            "INSERT INTO prompts(entity,slot,stage,backend,model,body,params,notes)
+             VALUES(?1,?2,?3,?4,?5,?6,?7,?8)",
+            rusqlite::params![
+                p.entity, p.slot, p.stage, p.backend, p.model, p.body, p.params, p.notes
+            ],
+        );
+        conn.last_insert_rowid()
+    }
+}
+
+pub fn delete_prompt(conn: &Connection, id: i64) {
+    let _ = conn.execute("DELETE FROM prompts WHERE id=?1", [id]);
+}
+
+/// Parse a per-entity `prompts.md` into prompt rows. Heuristic: `## <section>`
+/// sets backend/stage context ("OpenArt … (Stage 2)" → openart/2d, "ElevenLabs"
+/// → elevenlabs/voice, "Tripo" → tripo/3d); each `### <slot>` starts a prompt
+/// whose body is the following prose, with a `**Model:** X` line pulled out.
+pub fn parse_prompts_md(entity: &str, text: &str) -> Vec<PromptRow> {
+    let mut out = Vec::new();
+    let (mut backend, mut stage) = (String::new(), String::new());
+    let mut cur: Option<PromptRow> = None;
+    let mut body = String::new();
+    let flush = |cur: &mut Option<PromptRow>, body: &mut String, out: &mut Vec<PromptRow>| {
+        if let Some(mut p) = cur.take() {
+            p.body = body.trim().to_string();
+            if !p.body.is_empty() || !p.model.is_empty() {
+                out.push(p);
+            }
+        }
+        body.clear();
+    };
+    for line in text.lines() {
+        let t = line.trim();
+        if let Some(h) = t.strip_prefix("## ") {
+            flush(&mut cur, &mut body, &mut out);
+            let hl = h.to_lowercase();
+            backend = if hl.contains("openart") {
+                "openart".into()
+            } else if hl.contains("elevenlabs") || hl.contains("voice") {
+                "elevenlabs".into()
+            } else if hl.contains("tripo") {
+                "tripo".into()
+            } else if hl.contains("comfy") {
+                "comfy_local".into()
+            } else {
+                "".into()
+            };
+            stage = if hl.contains("voice") || hl.contains("elevenlabs") {
+                "voice".into()
+            } else if hl.contains("video") {
+                "video".into()
+            } else if hl.contains("3d") || hl.contains("tripo") {
+                "3d".into()
+            } else {
+                "2d".into()
+            };
+        } else if let Some(s) = t.strip_prefix("### ") {
+            flush(&mut cur, &mut body, &mut out);
+            cur = Some(PromptRow {
+                entity: entity.to_string(),
+                slot: s.trim().to_string(),
+                stage: stage.clone(),
+                backend: backend.clone(),
+                ..Default::default()
+            });
+        } else if let Some(m) = t.strip_prefix("**Model:**") {
+            if let Some(p) = cur.as_mut() {
+                p.model = m.split('|').next().unwrap_or("").trim().to_string();
+            }
+        } else if cur.is_some() && !t.starts_with("**") && !t.starts_with('#') {
+            body.push_str(line);
+            body.push('\n');
+        }
+    }
+    flush(&mut cur, &mut body, &mut out);
+    out
+}

@@ -11,10 +11,20 @@ pub enum Tab {
     Dashboard,
     Forge,
     Assets,
+    Prompts,
     Fetcher,
     Picker,
     Manifest,
     Settings,
+}
+
+/// Prompt matrix tab state: filter/import inputs + the row being edited.
+#[derive(Default)]
+pub struct PromptsUi {
+    pub filter: String,
+    pub import_entity: String,
+    pub edit: crate::project::PromptRow, // id==0 => new
+    pub editing: bool,
 }
 
 /// Asset Manager tab inputs.
@@ -192,6 +202,9 @@ pub struct SynthetrixApp {
     /// Asset Manager state.
     pub assets_ui: AssetsUi,
     pub assets: Vec<crate::project::AssetRow>,
+    /// Prompt matrix state.
+    pub prompts_ui: PromptsUi,
+    pub prompts: Vec<crate::project::PromptRow>,
 
     pub status: Option<String>,
     pub busy: bool,
@@ -259,6 +272,8 @@ impl SynthetrixApp {
             forge_assets: Vec::new(),
             assets_ui: AssetsUi::default(),
             assets: Vec::new(),
+            prompts_ui: PromptsUi::default(),
+            prompts: Vec::new(),
             status: None,
             busy: false,
             sync: None,
@@ -346,6 +361,9 @@ impl SynthetrixApp {
                 Event::Assets(rows) => {
                     self.assets = rows;
                 }
+                Event::Prompts(rows) => {
+                    self.prompts = rows;
+                }
                 Event::Error(e) => {
                     let msg = format!("⚠ {e}");
                     self.log.push(msg.clone());
@@ -400,6 +418,7 @@ impl eframe::App for SynthetrixApp {
                 ui.selectable_value(&mut self.tab, Tab::Dashboard, "▦ Dashboard");
                 ui.selectable_value(&mut self.tab, Tab::Forge, "✦ Forge");
                 ui.selectable_value(&mut self.tab, Tab::Assets, "🎞 Assets");
+                ui.selectable_value(&mut self.tab, Tab::Prompts, "✎ Prompts");
                 ui.selectable_value(&mut self.tab, Tab::Fetcher, "⬇ Fetcher");
                 ui.selectable_value(&mut self.tab, Tab::Picker, "☑ Picker");
                 ui.selectable_value(&mut self.tab, Tab::Manifest, "🗂 Manifest");
@@ -465,6 +484,7 @@ impl eframe::App for SynthetrixApp {
             Tab::Dashboard => crate::tabs::dashboard(self, ui),
             Tab::Forge => crate::tabs::forge(self, ui),
             Tab::Assets => crate::tabs::assets(self, ui),
+            Tab::Prompts => crate::tabs::prompts(self, ui),
             Tab::Fetcher => crate::tabs::fetcher(self, ui),
             Tab::Picker => crate::tabs::picker(self, ui),
             Tab::Manifest => crate::tabs::manifest(self, ui),

@@ -449,6 +449,213 @@ pub fn assets(app: &mut SynthetrixApp, ui: &mut egui::Ui) {
     }
 }
 
+// ---- Prompts (the prompt storage matrix) -----------------------------------
+
+/// Positive-anchoring lint: flag IP-bleed brand terms + too-short prompts.
+fn prompt_lint(body: &str) -> Option<String> {
+    let low = body.to_lowercase();
+    let bleed = [
+        "warhammer",
+        "40k",
+        "primaris",
+        "space marine",
+        "adeptus",
+        "halo",
+        "spartan",
+        "master chief",
+        "star wars",
+        "stormtrooper",
+        "jedi",
+        "sith",
+        "gundam",
+        "mandalorian",
+        "witcher",
+    ];
+    let hits: Vec<&str> = bleed.iter().copied().filter(|t| low.contains(t)).collect();
+    if !hits.is_empty() {
+        return Some(format!(
+            "IP-bleed risk: {} — anchor positively (describe the look) instead of naming the brand",
+            hits.join(", ")
+        ));
+    }
+    if body.trim().len() < 8 {
+        return Some("very short — add subject + style anchors".into());
+    }
+    None
+}
+
+pub fn prompts(app: &mut SynthetrixApp, ui: &mut egui::Ui) {
+    ui.add_space(8.0);
+    ui.heading("Prompts — the prompt storage matrix");
+    if app.project_info.is_none() {
+        ui.add_space(16.0);
+        ui.weak("No project open. Pick an IP from the switcher (top-right) first.");
+        return;
+    }
+    let cmds: RefCell<Vec<Cmd>> = RefCell::new(Vec::new());
+    let load_edit: RefCell<Option<crate::project::PromptRow>> = RefCell::new(None);
+    let to_forge: RefCell<Option<crate::project::PromptRow>> = RefCell::new(None);
+    let mut do_query = false;
+    let mut do_import = false;
+    let mut new_row = false;
+    {
+        let pu = &mut app.prompts_ui;
+        ui.horizontal_wrapped(|ui| {
+            ui.label("Entity filter:");
+            ui.add(egui::TextEdit::singleline(&mut pu.filter).desired_width(130.0));
+            if ui.button("Apply").clicked() {
+                do_query = true;
+            }
+            ui.separator();
+            ui.label("Import:");
+            ui.add(egui::TextEdit::singleline(&mut pu.import_entity).desired_width(130.0))
+                .on_hover_text("entity whose <entity>/prompts.md to parse from the lore repo");
+            if ui.button("⇩ from prompts.md").clicked() {
+                do_import = true;
+            }
+            ui.separator();
+            if ui.button("＋ New").clicked() {
+                new_row = true;
+            }
+        });
+    }
+    ui.separator();
+
+    // editor panel
+    let mut save = false;
+    let mut cancel = false;
+    if app.prompts_ui.editing {
+        let pu = &mut app.prompts_ui;
+        egui::Frame::group(ui.style()).show(ui, |ui| {
+            ui.label(
+                egui::RichText::new(if pu.edit.id > 0 {
+                    "Edit prompt"
+                } else {
+                    "New prompt"
+                })
+                .strong(),
+            );
+            egui::Grid::new("p_edit")
+                .num_columns(2)
+                .spacing([10.0, 3.0])
+                .show(ui, |ui| {
+                    ui.label("Entity");
+                    ui.text_edit_singleline(&mut pu.edit.entity);
+                    ui.end_row();
+                    ui.label("Slot");
+                    ui.text_edit_singleline(&mut pu.edit.slot);
+                    ui.end_row();
+                    ui.label("Stage");
+                    ui.text_edit_singleline(&mut pu.edit.stage);
+                    ui.end_row();
+                    ui.label("Backend");
+                    ui.text_edit_singleline(&mut pu.edit.backend);
+                    ui.end_row();
+                    ui.label("Model");
+                    ui.text_edit_singleline(&mut pu.edit.model);
+                    ui.end_row();
+                });
+            ui.label("Body:");
+            ui.add(
+                egui::TextEdit::multiline(&mut pu.edit.body)
+                    .desired_rows(4)
+                    .desired_width(f32::INFINITY),
+            );
+            if let Some(w) = prompt_lint(&pu.edit.body) {
+                ui.colored_label(egui::Color32::from_rgb(230, 170, 60), format!("⚠ {w}"));
+            }
+            ui.horizontal(|ui| {
+                if ui.button("💾 Save").clicked() {
+                    save = true;
+                }
+                if ui.button("Cancel").clicked() {
+                    cancel = true;
+                }
+            });
+        });
+        ui.separator();
+    }
+
+    // list
+    egui::ScrollArea::vertical().show(ui, |ui| {
+        for p in &app.prompts {
+            ui.horizontal(|ui| {
+                ui.strong(&p.entity);
+                ui.label(egui::RichText::new(&p.slot).italics());
+                ui.weak(format!("[{}·{}]", p.stage, p.backend));
+                if !p.model.is_empty() {
+                    ui.weak(&p.model);
+                }
+                if prompt_lint(&p.body).is_some() {
+                    ui.colored_label(egui::Color32::from_rgb(230, 170, 60), "⚠");
+                }
+                let preview: String = p.body.chars().take(60).collect();
+                ui.label(preview);
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if ui.small_button("🗑").clicked() {
+                        cmds.borrow_mut().push(Cmd::DeletePrompt(p.id));
+                    }
+                    if ui.small_button("→ Forge").clicked() {
+                        *to_forge.borrow_mut() = Some(p.clone());
+                    }
+                    if ui.small_button("edit").clicked() {
+                        *load_edit.borrow_mut() = Some(p.clone());
+                    }
+                    if !p.updated_at.is_empty() {
+                        ui.weak(&p.updated_at);
+                    }
+                });
+            });
+            ui.separator();
+        }
+    });
+
+    // drain
+    if do_query {
+        let entity = if app.prompts_ui.filter.trim().is_empty() {
+            None
+        } else {
+            Some(app.prompts_ui.filter.trim().to_string())
+        };
+        app.send(Cmd::QueryPrompts { entity });
+    }
+    if do_import {
+        app.send(Cmd::ImportPrompts {
+            entity: app.prompts_ui.import_entity.clone(),
+        });
+    }
+    if new_row {
+        app.prompts_ui.edit = crate::project::PromptRow {
+            backend: "comfy_local".into(),
+            stage: "2d".into(),
+            ..Default::default()
+        };
+        app.prompts_ui.editing = true;
+    }
+    if save {
+        app.send(Cmd::SavePrompt(app.prompts_ui.edit.clone()));
+        app.prompts_ui.editing = false;
+    }
+    if cancel {
+        app.prompts_ui.editing = false;
+    }
+    if let Some(r) = load_edit.into_inner() {
+        app.prompts_ui.edit = r;
+        app.prompts_ui.editing = true;
+    }
+    if let Some(r) = to_forge.into_inner() {
+        app.forge_ui.prompt = r.body;
+        if !r.model.is_empty() {
+            app.forge_ui.model = r.model;
+        }
+        app.forge_ui.entity = r.entity;
+        app.tab = crate::app::Tab::Forge;
+    }
+    for c in cmds.into_inner() {
+        app.send(c);
+    }
+}
+
 // ---- Fetcher ---------------------------------------------------------------
 
 pub fn fetcher(app: &mut SynthetrixApp, ui: &mut egui::Ui) {
