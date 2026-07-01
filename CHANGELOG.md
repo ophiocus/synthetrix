@@ -9,6 +9,8 @@ app's runtime version is derived from the latest `v*` git tag (`app/build.rs` â†
 
 ## [Unreleased]
 
+## [0.1.4] - 2026-06-30
+
 ### Added
 - **Orchestrator overhaul â€” Synthetrix is now a per-IP production cockpit.** The
   model harvester grew into the authoritative dashboard + digital vault for a game

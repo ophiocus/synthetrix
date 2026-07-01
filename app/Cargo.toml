@@ -1,9 +1,9 @@
 [package]
 name = "synthetrix"
-version = "0.1.3"
+version = "0.1.4"
 edition = "2021"
 authors = ["ophiocus <csantanad@gmail.com>"]
-description = "CivitAI checkpoint/LoRA harvester: fetch, pick, manifest with NVMe hotload"
+description = "Per-IP creative-production orchestrator: forge, lore, prompts, pipelines, releases"
 license = "MIT"
 
 [dependencies]
