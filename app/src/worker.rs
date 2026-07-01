@@ -69,6 +69,15 @@ pub enum Cmd {
     },
     /// Refresh the Pipelines tab's run list.
     QueryPipelines,
+    /// Release authority: cut a freeze / ship-cut for the active IP.
+    CreateRelease {
+        name: String,
+        kind: String,
+    },
+    /// Refresh the Releases tab.
+    QueryReleases,
+    /// Export a stored release manifest to disk.
+    ExportRelease(i64),
     Sync,
     QueryPicks(db::PickFilter),
     QueryManifest,
@@ -123,6 +132,8 @@ pub enum Event {
     },
     /// Composite pipeline run list.
     Pipelines(Vec<project::PipelineRun>),
+    /// Release list for the active IP.
+    Releases(Vec<project::ReleaseRow>),
     Error(String),
 }
 
@@ -325,6 +336,9 @@ fn handle(st: &mut State, cmd: Cmd) {
         Cmd::RunBurst { req, entity, count } => run_burst(st, req, entity, count),
         Cmd::RunPipeline { name, entity, req } => run_pipeline(st, name, entity, req),
         Cmd::QueryPipelines => refresh_pipelines(st),
+        Cmd::CreateRelease { name, kind } => create_release(st, name, kind),
+        Cmd::QueryReleases => refresh_releases(st),
+        Cmd::ExportRelease(id) => export_release(st, id),
         Cmd::QueryPicks(f) => {
             if let Some(conn) = &st.conn {
                 match db::query_picks(conn, &f) {
@@ -402,6 +416,7 @@ fn set_project(st: &mut State, p: Project) {
             }
             query_lore_cmd(st, None, None);
             refresh_pipelines(st);
+            refresh_releases(st);
             st.status(format!("project: {}", p.name));
         }
         Err(e) => {
@@ -1162,6 +1177,86 @@ fn run_pipeline(st: &mut State, name: String, entity: String, req: GenRequest) {
 fn refresh_pipelines(st: &State) {
     if let Some(c) = &st.project_conn {
         st.emit(Event::Pipelines(project::recent_pipelines(c, 50)));
+    }
+}
+
+// ---- Phase 6: Release authority --------------------------------------------
+
+fn refresh_releases(st: &State) {
+    if let Some(c) = &st.project_conn {
+        st.emit(Event::Releases(project::recent_releases(c, 50)));
+    }
+}
+
+/// Cut a freeze / ship-cut for the active IP: build the manifest (model-layer
+/// snapshot + optional asset reproducibility trail), store it, and export it.
+fn create_release(st: &mut State, name: String, kind: String) {
+    let Some(ip) = st.active_project.clone() else {
+        st.emit(Event::Error("no project open — pick an IP first".into()));
+        return;
+    };
+    if st.project_conn.is_none() {
+        st.emit(Event::Error("project DB not open".into()));
+        return;
+    }
+    let nm = name.trim().to_string();
+    if nm.is_empty() {
+        st.emit(Event::Error("enter a release name".into()));
+        return;
+    }
+    let kind = if kind == "shipcut" {
+        "shipcut"
+    } else {
+        "freeze"
+    };
+    st.emit(Event::Busy(true));
+    let (manifest, summary) = {
+        let pc = st.project_conn.as_ref().unwrap();
+        crate::release::build_manifest(kind, &nm, &ip, pc, st.conn.as_ref())
+    };
+    let manifest_str = manifest.to_string();
+    let row_id = match &st.project_conn {
+        Some(c) => project::insert_release(c, &nm, kind, &manifest_str),
+        None => 0,
+    };
+    // export the just-cut manifest to the vault
+    let exported = project::release_by_id(st.project_conn.as_ref().unwrap(), row_id)
+        .and_then(|r| crate::release::export(&ip, &r).ok());
+    st.emit(Event::Busy(false));
+    match exported {
+        Some(path) => st.status(format!(
+            "{kind} '{nm}': {} assets, {} frozen models → {path}",
+            summary.assets, summary.frozen_models
+        )),
+        None => st.status(format!(
+            "{kind} '{nm}': {} assets, {} frozen models (export failed)",
+            summary.assets, summary.frozen_models
+        )),
+    }
+    st.emit(Event::Log(format!(
+        "release '{nm}' [{kind}]: {} assets · {} frozen models · {} prompts · {} lore docs",
+        summary.assets, summary.frozen_models, summary.prompts, summary.lore
+    )));
+    refresh_releases(st);
+    emit_project_info(st);
+}
+
+fn export_release(st: &State, id: i64) {
+    let Some(ip) = st.active_project.as_ref() else {
+        st.emit(Event::Error("no project open".into()));
+        return;
+    };
+    let Some(row) = st
+        .project_conn
+        .as_ref()
+        .and_then(|c| project::release_by_id(c, id))
+    else {
+        st.emit(Event::Error("release not found".into()));
+        return;
+    };
+    match crate::release::export(ip, &row) {
+        Ok(path) => st.status(format!("exported {} → {path}", row.name)),
+        Err(e) => st.emit(Event::Error(format!("export: {e}"))),
     }
 }
 

@@ -1024,6 +1024,134 @@ pub fn pipelines(app: &mut SynthetrixApp, ui: &mut egui::Ui) {
     });
 }
 
+// ---- Releases --------------------------------------------------------------
+
+pub fn releases(app: &mut SynthetrixApp, ui: &mut egui::Ui) {
+    ui.add_space(8.0);
+    ui.heading("Releases — the IP's ship authority");
+    if app.project_info.is_none() {
+        ui.add_space(16.0);
+        ui.weak("No project open. Pick an IP from the switcher (top-right) first.");
+        return;
+    }
+    ui.weak(
+        "A freeze snapshots the active model layer (exact sha256s). A ship-cut adds the \
+         full asset reproducibility trail (asset → hash → prompt/params → engine path). \
+         Manifests export to <lore_root>/.synthetrix/releases/.",
+    );
+    ui.separator();
+
+    let mut cut_freeze = false;
+    let mut cut_shipcut = false;
+    let mut refresh = false;
+    let busy = app.busy;
+    {
+        let ru = &mut app.releases_ui;
+        ui.horizontal_wrapped(|ui| {
+            ui.label("Name:");
+            ui.add(egui::TextEdit::singleline(&mut ru.name).desired_width(200.0))
+                .on_hover_text("e.g. v0.1-alpha or drop-pod-cut");
+            let ready = !ru.name.trim().is_empty() && !busy;
+            if ui
+                .add_enabled(ready, egui::Button::new("❄ Freeze"))
+                .on_hover_text("snapshot the active model layer")
+                .clicked()
+            {
+                cut_freeze = true;
+            }
+            if ui
+                .add_enabled(ready, egui::Button::new("🏷 Ship-cut"))
+                .on_hover_text("full asset manifest + reproducibility trail")
+                .clicked()
+            {
+                cut_shipcut = true;
+            }
+            if busy {
+                ui.spinner();
+            }
+            if ui.button("↻").on_hover_text("refresh").clicked() {
+                refresh = true;
+            }
+        });
+    }
+    if refresh {
+        app.send(Cmd::QueryReleases);
+    }
+    if cut_freeze || cut_shipcut {
+        app.send(Cmd::CreateRelease {
+            name: app.releases_ui.name.clone(),
+            kind: if cut_shipcut { "shipcut" } else { "freeze" }.into(),
+        });
+    }
+
+    ui.separator();
+    let mut export: Option<i64> = None;
+    let mut toggle: Option<i64> = None;
+    egui::ScrollArea::vertical().show(ui, |ui| {
+        for r in &app.releases {
+            let (col, glyph) = if r.kind == "shipcut" {
+                (egui::Color32::from_rgb(120, 190, 240), "🏷")
+            } else {
+                (egui::Color32::from_rgb(150, 200, 200), "❄")
+            };
+            ui.horizontal_wrapped(|ui| {
+                ui.colored_label(col, format!("{glyph} #{}", r.id));
+                ui.strong(&r.name);
+                ui.weak(&r.kind);
+                // pull a couple of headline counts out of the manifest
+                if let Ok(v) = serde_json::from_str::<serde_json::Value>(&r.manifest) {
+                    let a = v["counts"]["assets"].as_i64().unwrap_or(0);
+                    let m = v["model_freeze"].as_array().map_or(0, |x| x.len());
+                    ui.weak(format!("{a} assets · {m} frozen models"));
+                }
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    ui.weak(&r.created_at);
+                    if ui.small_button("⤓ export").clicked() {
+                        export = Some(r.id);
+                    }
+                    let shown = app.releases_ui.expanded == Some(r.id);
+                    if ui
+                        .small_button(if shown { "hide" } else { "view" })
+                        .clicked()
+                    {
+                        toggle = Some(r.id);
+                    }
+                });
+            });
+            if app.releases_ui.expanded == Some(r.id) {
+                let pretty = serde_json::from_str::<serde_json::Value>(&r.manifest)
+                    .ok()
+                    .and_then(|v| serde_json::to_string_pretty(&v).ok())
+                    .unwrap_or_else(|| r.manifest.clone());
+                let mut src = pretty;
+                ui.add(
+                    egui::TextEdit::multiline(&mut src)
+                        .desired_rows(16)
+                        .desired_width(f32::INFINITY)
+                        .code_editor()
+                        .interactive(false),
+                );
+            }
+            ui.separator();
+        }
+        if app.releases.is_empty() {
+            ui.add_space(12.0);
+            ui.weak("No releases yet. Name a cut above and Freeze or Ship-cut.");
+        }
+    });
+
+    if let Some(id) = export {
+        app.send(Cmd::ExportRelease(id));
+    }
+    if let Some(id) = toggle {
+        app.releases_ui.expanded = if app.releases_ui.expanded == Some(id) {
+            None
+        } else {
+            Some(id)
+        };
+    }
+}
+
 // ---- Fetcher ---------------------------------------------------------------
 
 pub fn fetcher(app: &mut SynthetrixApp, ui: &mut egui::Ui) {

@@ -14,6 +14,7 @@ pub enum Tab {
     Prompts,
     Lore,
     Pipelines,
+    Releases,
     Fetcher,
     Picker,
     Manifest,
@@ -27,6 +28,13 @@ pub struct PromptsUi {
     pub import_entity: String,
     pub edit: crate::project::PromptRow, // id==0 => new
     pub editing: bool,
+}
+
+/// Release authority tab state: cut name + expanded manifest view.
+#[derive(Default)]
+pub struct ReleasesUi {
+    pub name: String,
+    pub expanded: Option<i64>, // release id whose manifest is shown
 }
 
 /// Composite pipelines tab state: chosen build + notion/entity inputs.
@@ -234,6 +242,9 @@ pub struct SynthetrixApp {
     /// Composite pipelines state.
     pub pipelines_ui: PipelinesUi,
     pub pipeline_runs: Vec<crate::project::PipelineRun>,
+    /// Release authority state.
+    pub releases_ui: ReleasesUi,
+    pub releases: Vec<crate::project::ReleaseRow>,
 
     pub status: Option<String>,
     pub busy: bool,
@@ -308,6 +319,8 @@ impl SynthetrixApp {
             lore_kinds: Vec::new(),
             pipelines_ui: PipelinesUi::default(),
             pipeline_runs: Vec::new(),
+            releases_ui: ReleasesUi::default(),
+            releases: Vec::new(),
             status: None,
             busy: false,
             sync: None,
@@ -408,6 +421,9 @@ impl SynthetrixApp {
                 Event::Pipelines(rows) => {
                     self.pipeline_runs = rows;
                 }
+                Event::Releases(rows) => {
+                    self.releases = rows;
+                }
                 Event::Error(e) => {
                     let msg = format!("⚠ {e}");
                     self.log.push(msg.clone());
@@ -465,6 +481,7 @@ impl eframe::App for SynthetrixApp {
                 ui.selectable_value(&mut self.tab, Tab::Prompts, "✎ Prompts");
                 ui.selectable_value(&mut self.tab, Tab::Lore, "📖 Lore");
                 ui.selectable_value(&mut self.tab, Tab::Pipelines, "⛓ Pipelines");
+                ui.selectable_value(&mut self.tab, Tab::Releases, "🏷 Releases");
                 ui.selectable_value(&mut self.tab, Tab::Fetcher, "⬇ Fetcher");
                 ui.selectable_value(&mut self.tab, Tab::Picker, "☑ Picker");
                 ui.selectable_value(&mut self.tab, Tab::Manifest, "🗂 Manifest");
@@ -534,6 +551,7 @@ impl eframe::App for SynthetrixApp {
             Tab::Prompts => crate::tabs::prompts(self, ui),
             Tab::Lore => crate::tabs::lore(self, ui),
             Tab::Pipelines => crate::tabs::pipelines(self, ui),
+            Tab::Releases => crate::tabs::releases(self, ui),
             Tab::Fetcher => crate::tabs::fetcher(self, ui),
             Tab::Picker => crate::tabs::picker(self, ui),
             Tab::Manifest => crate::tabs::manifest(self, ui),

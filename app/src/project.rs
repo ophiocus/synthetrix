@@ -502,3 +502,108 @@ pub fn recent_pipelines(conn: &Connection, limit: i64) -> Vec<PipelineRun> {
         .map(|rows| rows.filter_map(|r| r.ok()).collect())
         .unwrap_or_default()
 }
+
+// ---- Releases (the IP's ship authority) -----------------------------------
+
+#[derive(Clone, Default)]
+pub struct ReleaseRow {
+    pub id: i64,
+    pub name: String,
+    pub kind: String, // "freeze" | "shipcut"
+    pub manifest: String,
+    pub created_at: String,
+}
+
+pub fn insert_release(conn: &Connection, name: &str, kind: &str, manifest: &str) -> i64 {
+    let _ = conn.execute(
+        "INSERT INTO releases(name,kind,manifest) VALUES(?1,?2,?3)",
+        rusqlite::params![name, kind, manifest],
+    );
+    conn.last_insert_rowid()
+}
+
+pub fn recent_releases(conn: &Connection, limit: i64) -> Vec<ReleaseRow> {
+    let mut stmt = match conn
+        .prepare("SELECT id,name,kind,manifest,created_at FROM releases ORDER BY id DESC LIMIT ?1")
+    {
+        Ok(s) => s,
+        Err(_) => return Vec::new(),
+    };
+    stmt.query_map([limit], |r| {
+        Ok(ReleaseRow {
+            id: r.get(0)?,
+            name: r.get::<_, Option<String>>(1)?.unwrap_or_default(),
+            kind: r.get::<_, Option<String>>(2)?.unwrap_or_default(),
+            manifest: r.get::<_, Option<String>>(3)?.unwrap_or_default(),
+            created_at: r.get::<_, Option<String>>(4)?.unwrap_or_default(),
+        })
+    })
+    .map(|rows| rows.filter_map(|r| r.ok()).collect())
+    .unwrap_or_default()
+}
+
+pub fn release_by_id(conn: &Connection, id: i64) -> Option<ReleaseRow> {
+    conn.query_row(
+        "SELECT id,name,kind,manifest,created_at FROM releases WHERE id=?1",
+        [id],
+        |r| {
+            Ok(ReleaseRow {
+                id: r.get(0)?,
+                name: r.get::<_, Option<String>>(1)?.unwrap_or_default(),
+                kind: r.get::<_, Option<String>>(2)?.unwrap_or_default(),
+                manifest: r.get::<_, Option<String>>(3)?.unwrap_or_default(),
+                created_at: r.get::<_, Option<String>>(4)?.unwrap_or_default(),
+            })
+        },
+    )
+    .ok()
+}
+
+/// Asset provenance rows for a release manifest: full reproducibility trail
+/// (sha256 + originating job's prompt/params + engine placement).
+pub fn release_asset_trail(conn: &Connection) -> Vec<serde_json::Value> {
+    let mut stmt = match conn.prepare(
+        "SELECT a.id, a.kind, a.name, a.entity, a.media_type, a.sha256, a.path,
+                a.engine_path, a.metadata, j.prompt, j.params, j.backend
+         FROM assets a LEFT JOIN jobs j ON j.id = a.job_id
+         ORDER BY a.id",
+    ) {
+        Ok(s) => s,
+        Err(_) => return Vec::new(),
+    };
+    stmt.query_map([], |r| {
+        Ok(serde_json::json!({
+            "id": r.get::<_, i64>(0)?,
+            "kind": r.get::<_, Option<String>>(1)?.unwrap_or_default(),
+            "name": r.get::<_, Option<String>>(2)?.unwrap_or_default(),
+            "entity": r.get::<_, Option<String>>(3)?.unwrap_or_default(),
+            "media_type": r.get::<_, Option<String>>(4)?.unwrap_or_default(),
+            "sha256": r.get::<_, Option<String>>(5)?.unwrap_or_default(),
+            "path": r.get::<_, Option<String>>(6)?.unwrap_or_default(),
+            "engine_path": r.get::<_, Option<String>>(7)?,
+            "metadata": r.get::<_, Option<String>>(8)?.unwrap_or_default(),
+            "job_prompt": r.get::<_, Option<String>>(9)?.unwrap_or_default(),
+            "job_params": r.get::<_, Option<String>>(10)?.unwrap_or_default(),
+            "job_backend": r.get::<_, Option<String>>(11)?.unwrap_or_default(),
+        }))
+    })
+    .map(|rows| rows.filter_map(|r| r.ok()).collect())
+    .unwrap_or_default()
+}
+
+/// Coarse asset counts by kind, for release summaries.
+pub fn asset_kind_counts(conn: &Connection) -> Vec<(String, i64)> {
+    let mut stmt =
+        match conn.prepare("SELECT kind, COUNT(*) FROM assets GROUP BY kind ORDER BY kind") {
+            Ok(s) => s,
+            Err(_) => return Vec::new(),
+        };
+    stmt.query_map([], |r| {
+        Ok((
+            r.get::<_, Option<String>>(0)?.unwrap_or_default(),
+            r.get::<_, i64>(1)?,
+        ))
+    })
+    .map(|rows| rows.filter_map(|r| r.ok()).collect())
+    .unwrap_or_default()
+}
