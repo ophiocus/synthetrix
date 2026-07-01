@@ -25,6 +25,18 @@ pub enum Cmd {
     },
     /// Refresh the Forge tab's job + asset lists.
     QueryForge,
+    /// Asset manager: scan the IP asset vault and register new media files.
+    ScanAssets,
+    /// Asset manager: browse assets, filtered by kind bucket + entity substring.
+    QueryAssets {
+        kind: Option<String>,
+        entity: Option<String>,
+    },
+    /// Asset manager: copy an asset into the IP's engine tree under a topic.
+    PlaceAsset {
+        id: i64,
+        topic: String,
+    },
     Sync,
     QueryPicks(db::PickFilter),
     QueryManifest,
@@ -63,6 +75,8 @@ pub enum Event {
         jobs: Vec<project::JobRow>,
         assets: Vec<project::AssetRow>,
     },
+    /// Asset manager browse results.
+    Assets(Vec<project::AssetRow>),
     Error(String),
 }
 
@@ -240,6 +254,9 @@ fn handle(st: &mut State, cmd: Cmd) {
         Cmd::SetProject(p) => set_project(st, p),
         Cmd::Generate { req, entity } => generate(st, req, entity),
         Cmd::QueryForge => refresh_forge(st),
+        Cmd::ScanAssets => scan_assets(st),
+        Cmd::QueryAssets { kind, entity } => query_assets_cmd(st, kind, entity),
+        Cmd::PlaceAsset { id, topic } => place_asset(st, id, topic),
         Cmd::QueryPicks(f) => {
             if let Some(conn) = &st.conn {
                 match db::query_picks(conn, &f) {
@@ -305,6 +322,7 @@ fn set_project(st: &mut State, p: Project) {
             st.active_project = Some(p.clone());
             emit_project_info(st);
             refresh_forge(st);
+            query_assets_cmd(st, None, None);
             st.status(format!("project: {}", p.name));
         }
         Err(e) => {
@@ -439,6 +457,123 @@ fn sha256_bytes(bytes: &[u8]) -> String {
     let mut h = Sha256::new();
     h.update(bytes);
     format!("{:x}", h.finalize())
+}
+
+// ---- Phase 2: Asset Manager ------------------------------------------------
+
+fn query_assets_cmd(st: &State, kind: Option<String>, entity: Option<String>) {
+    if let Some(c) = &st.project_conn {
+        let rows = project::query_assets(
+            c,
+            kind.as_deref(),
+            entity.as_deref().filter(|s| !s.is_empty()),
+            500,
+        );
+        st.emit(Event::Assets(rows));
+    }
+}
+
+/// Walk the IP asset vault and register any media files not yet tracked.
+fn scan_assets(st: &mut State) {
+    let Some(project) = st.active_project.clone() else {
+        st.emit(Event::Error("no project open".into()));
+        return;
+    };
+    if st.project_conn.is_none() {
+        return;
+    }
+    st.emit(Event::Busy(true));
+    let root = project.asset_vault_path();
+    let mut stack = vec![root];
+    let mut added = 0usize;
+    while let Some(dir) = stack.pop() {
+        let Ok(rd) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+        for e in rd.flatten() {
+            let p = e.path();
+            if p.is_dir() {
+                stack.push(p);
+                continue;
+            }
+            let (kind, mt) = project::media_type_for(&p);
+            if kind == "other" {
+                continue; // skip sidecars / unknowns
+            }
+            let ps = p.to_string_lossy().into_owned();
+            if let Some(c) = &st.project_conn {
+                if project::asset_exists(c, &ps) {
+                    continue;
+                }
+                let parent = p
+                    .parent()
+                    .and_then(|d| d.file_name())
+                    .and_then(|n| n.to_str())
+                    .unwrap_or("");
+                let entity = if matches!(parent, "images" | "video" | "audio" | "meshes" | "assets")
+                {
+                    String::new()
+                } else {
+                    parent.to_string()
+                };
+                let name = p
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .unwrap_or("")
+                    .to_string();
+                project::insert_scanned_asset(c, kind, &name, &entity, &mt, &ps, "");
+                added += 1;
+            }
+        }
+    }
+    st.emit(Event::Busy(false));
+    st.status(format!("asset scan: +{added} new"));
+    query_assets_cmd(st, None, None);
+    emit_project_info(st);
+}
+
+/// Copy an asset into the IP's engine tree: <engine_root>/Content/Generated/<topic>/.
+fn place_asset(st: &mut State, id: i64, topic: String) {
+    let Some(project) = st.active_project.clone() else {
+        st.emit(Event::Error("no project open".into()));
+        return;
+    };
+    if project.engine_root.trim().is_empty() {
+        st.emit(Event::Error(
+            "this IP has no engine root set (Settings)".into(),
+        ));
+        return;
+    }
+    let Some(row) = st
+        .project_conn
+        .as_ref()
+        .and_then(|c| project::asset_by_id(c, id))
+    else {
+        st.emit(Event::Error("asset not found".into()));
+        return;
+    };
+    let src = Path::new(&row.path);
+    if !src.is_file() {
+        st.emit(Event::Error("asset file missing on disk".into()));
+        return;
+    }
+    let dest_dir = Path::new(&project.engine_root)
+        .join("Content")
+        .join("Generated")
+        .join(&topic);
+    let _ = std::fs::create_dir_all(&dest_dir);
+    let dest = dest_dir.join(&row.name);
+    match std::fs::copy(src, &dest) {
+        Ok(_) => {
+            let dp = dest.to_string_lossy().into_owned();
+            if let Some(c) = &st.project_conn {
+                project::set_engine_path(c, id, &dp);
+            }
+            st.status(format!("placed {} → {topic}", row.name));
+        }
+        Err(e) => st.emit(Event::Error(format!("place: {e}"))),
+    }
+    query_assets_cmd(st, None, None);
 }
 
 const QUERIES: [(&str, &str); 3] = [

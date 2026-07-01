@@ -293,6 +293,162 @@ pub fn forge(app: &mut SynthetrixApp, ui: &mut egui::Ui) {
     });
 }
 
+// ---- Assets (multi-modal manager) ------------------------------------------
+
+const ASSET_KINDS: [&str; 6] = ["All", "image", "video", "audio", "mesh", "other"];
+
+pub fn assets(app: &mut SynthetrixApp, ui: &mut egui::Ui) {
+    ui.add_space(8.0);
+    ui.heading("Assets — the IP's media vault");
+    if app.project_info.is_none() {
+        ui.add_space(16.0);
+        ui.weak("No project open. Pick an IP from the switcher (top-right) first.");
+        return;
+    }
+    let cmds: RefCell<Vec<Cmd>> = RefCell::new(Vec::new());
+    let mut do_scan = false;
+    let mut do_query = false;
+    {
+        let au = &mut app.assets_ui;
+        ui.horizontal_wrapped(|ui| {
+            ui.label("Kind:");
+            egui::ComboBox::from_id_source("asset_kind")
+                .selected_text(ASSET_KINDS[au.kind_idx.min(5)])
+                .show_ui(ui, |ui| {
+                    for (i, k) in ASSET_KINDS.iter().enumerate() {
+                        if ui.selectable_value(&mut au.kind_idx, i, *k).clicked() {
+                            do_query = true;
+                        }
+                    }
+                });
+            ui.label("Entity:");
+            ui.add(egui::TextEdit::singleline(&mut au.entity).desired_width(140.0));
+            if ui.button("Apply").clicked() {
+                do_query = true;
+            }
+            ui.separator();
+            if ui
+                .button("⟳ Scan vault")
+                .on_hover_text("register new media files found in the IP asset vault")
+                .clicked()
+            {
+                do_scan = true;
+            }
+            ui.separator();
+            ui.label("Place topic:");
+            ui.add(egui::TextEdit::singleline(&mut au.topic).desired_width(120.0))
+                .on_hover_text("engine subfolder: Characters / Props / Weapons / Mechs / Worlds");
+        });
+    }
+    ui.separator();
+    ui.weak(format!("{} shown", app.assets.len()));
+
+    let topic = app.assets_ui.topic.trim().to_string();
+    let has_engine = app
+        .project_info
+        .as_ref()
+        .map(|i| !i.engine_root.is_empty())
+        .unwrap_or(false);
+
+    egui::ScrollArea::vertical().show(ui, |ui| {
+        ui.horizontal_wrapped(|ui| {
+            for a in &app.assets {
+                egui::Frame::group(ui.style()).rounding(6.0).show(ui, |ui| {
+                    ui.set_width(150.0);
+                    ui.vertical(|ui| {
+                        if a.kind == "image" {
+                            ui.add(
+                                egui::Image::new(format!("file://{}", a.path))
+                                    .fit_to_exact_size(egui::vec2(140.0, 110.0))
+                                    .maintain_aspect_ratio(true)
+                                    .rounding(4.0),
+                            );
+                        } else {
+                            let glyph = match a.kind.as_str() {
+                                "video" => "🎬",
+                                "audio" => "♪",
+                                "mesh" => "⬡",
+                                _ => "◻",
+                            };
+                            let (rect, _) = ui.allocate_exact_size(
+                                egui::vec2(140.0, 110.0),
+                                egui::Sense::hover(),
+                            );
+                            ui.painter().rect_filled(
+                                rect,
+                                egui::Rounding::same(4.0),
+                                egui::Color32::from_gray(40),
+                            );
+                            ui.painter().text(
+                                rect.center(),
+                                egui::Align2::CENTER_CENTER,
+                                glyph,
+                                egui::FontId::proportional(38.0),
+                                egui::Color32::from_gray(180),
+                            );
+                        }
+                        ui.add(
+                            egui::Label::new(egui::RichText::new(&a.name).small().strong())
+                                .truncate(),
+                        )
+                        .on_hover_text(&a.path);
+                        ui.weak(format!(
+                            "{}{}",
+                            a.kind,
+                            if a.entity.is_empty() {
+                                String::new()
+                            } else {
+                                format!(" · {}", a.entity)
+                            }
+                        ));
+                        ui.horizontal(|ui| {
+                            if a.engine_path.is_some() {
+                                ui.colored_label(egui::Color32::from_rgb(80, 200, 120), "● placed");
+                            } else if has_engine
+                                && ui
+                                    .add_enabled(
+                                        !topic.is_empty(),
+                                        egui::Button::new("→ engine").small(),
+                                    )
+                                    .on_hover_text(format!(
+                                        "copy into engine/Content/Generated/{topic}"
+                                    ))
+                                    .clicked()
+                            {
+                                cmds.borrow_mut().push(Cmd::PlaceAsset {
+                                    id: a.id,
+                                    topic: topic.clone(),
+                                });
+                            }
+                        });
+                    });
+                });
+            }
+        });
+    });
+
+    if do_scan {
+        app.send(Cmd::ScanAssets);
+    }
+    if do_query {
+        let ku = app.assets_ui.kind_idx;
+        let kind = if ku == 0 {
+            None
+        } else {
+            Some(ASSET_KINDS[ku].to_string())
+        };
+        let entity = if app.assets_ui.entity.trim().is_empty() {
+            None
+        } else {
+            Some(app.assets_ui.entity.trim().to_string())
+        };
+        app.send(Cmd::QueryAssets { kind, entity });
+    }
+    for c in cmds.into_inner() {
+        app.send(c);
+    }
+}
+
 // ---- Fetcher ---------------------------------------------------------------
 
 pub fn fetcher(app: &mut SynthetrixApp, ui: &mut egui::Ui) {

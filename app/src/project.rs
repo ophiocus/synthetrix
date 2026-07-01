@@ -158,7 +158,112 @@ pub struct AssetRow {
     pub entity: String,
     pub media_type: String,
     pub path: String,
+    pub engine_path: Option<String>,
     pub created_at: String,
+}
+
+/// Classify a file by extension: (kind, media_type). kind is a coarse bucket
+/// used for the Asset Manager filters; media_type is a MIME-ish string.
+pub fn media_type_for(path: &std::path::Path) -> (&'static str, String) {
+    let ext = path
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    match ext.as_str() {
+        "png" => ("image", "image/png".into()),
+        "jpg" | "jpeg" => ("image", "image/jpeg".into()),
+        "webp" => ("image", "image/webp".into()),
+        "gif" => ("image", "image/gif".into()),
+        "mp4" | "mov" | "webm" | "mkv" => ("video", format!("video/{ext}")),
+        "wav" => ("audio", "audio/wav".into()),
+        "mp3" => ("audio", "audio/mpeg".into()),
+        "flac" | "ogg" | "aac" | "m4a" => ("audio", format!("audio/{ext}")),
+        "glb" | "gltf" => ("mesh", "model/gltf-binary".into()),
+        "fbx" | "obj" | "usdz" | "usd" | "ply" | "stl" => ("mesh", format!("model/{ext}")),
+        _ => ("other", "application/octet-stream".into()),
+    }
+}
+
+fn row_to_asset(r: &rusqlite::Row) -> rusqlite::Result<AssetRow> {
+    Ok(AssetRow {
+        id: r.get(0)?,
+        kind: r.get::<_, Option<String>>(1)?.unwrap_or_default(),
+        name: r.get::<_, Option<String>>(2)?.unwrap_or_default(),
+        entity: r.get::<_, Option<String>>(3)?.unwrap_or_default(),
+        media_type: r.get::<_, Option<String>>(4)?.unwrap_or_default(),
+        path: r.get::<_, Option<String>>(5)?.unwrap_or_default(),
+        engine_path: r.get(6)?,
+        created_at: r.get::<_, Option<String>>(7)?.unwrap_or_default(),
+    })
+}
+
+const ASSET_COLS: &str = "id,kind,name,entity,media_type,path,engine_path,created_at";
+
+pub fn asset_exists(conn: &Connection, path: &str) -> bool {
+    conn.query_row("SELECT 1 FROM assets WHERE path=?1 LIMIT 1", [path], |_| {
+        Ok(())
+    })
+    .is_ok()
+}
+
+/// Register a file discovered by a vault scan (no originating job).
+pub fn insert_scanned_asset(
+    conn: &Connection,
+    kind: &str,
+    name: &str,
+    entity: &str,
+    media_type: &str,
+    path: &str,
+    sha256: &str,
+) -> i64 {
+    let _ = conn.execute(
+        "INSERT INTO assets(kind,name,entity,media_type,path,sha256,job_id)
+         VALUES(?1,?2,?3,?4,?5,?6,0)",
+        rusqlite::params![kind, name, entity, media_type, path, sha256],
+    );
+    conn.last_insert_rowid()
+}
+
+pub fn set_engine_path(conn: &Connection, id: i64, engine_path: &str) {
+    let _ = conn.execute(
+        "UPDATE assets SET engine_path=?1 WHERE id=?2",
+        rusqlite::params![engine_path, id],
+    );
+}
+
+pub fn asset_by_id(conn: &Connection, id: i64) -> Option<AssetRow> {
+    conn.query_row(
+        &format!("SELECT {ASSET_COLS} FROM assets WHERE id=?1"),
+        [id],
+        row_to_asset,
+    )
+    .ok()
+}
+
+/// Filtered asset browse for the Asset Manager. `kind` filters the coarse bucket
+/// (image/video/audio/mesh/other); `entity` is a substring match.
+pub fn query_assets(
+    conn: &Connection,
+    kind: Option<&str>,
+    entity: Option<&str>,
+    limit: i64,
+) -> Vec<AssetRow> {
+    let mut sql = format!("SELECT {ASSET_COLS} FROM assets WHERE 1=1");
+    if let Some(k) = kind {
+        sql.push_str(&format!(" AND kind='{}'", k.replace('\'', "''")));
+    }
+    if let Some(e) = entity {
+        sql.push_str(&format!(" AND entity LIKE '%{}%'", e.replace('\'', "''")));
+    }
+    sql.push_str(&format!(" ORDER BY id DESC LIMIT {limit}"));
+    let mut stmt = match conn.prepare(&sql) {
+        Ok(s) => s,
+        Err(_) => return Vec::new(),
+    };
+    stmt.query_map([], row_to_asset)
+        .map(|rows| rows.filter_map(|r| r.ok()).collect())
+        .unwrap_or_default()
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -182,24 +287,5 @@ pub fn insert_asset(
 }
 
 pub fn recent_assets(conn: &Connection, limit: i64) -> Vec<AssetRow> {
-    let mut stmt = match conn.prepare(
-        "SELECT id,kind,name,entity,media_type,path,created_at
-         FROM assets ORDER BY id DESC LIMIT ?1",
-    ) {
-        Ok(s) => s,
-        Err(_) => return Vec::new(),
-    };
-    stmt.query_map([limit], |r| {
-        Ok(AssetRow {
-            id: r.get(0)?,
-            kind: r.get::<_, Option<String>>(1)?.unwrap_or_default(),
-            name: r.get::<_, Option<String>>(2)?.unwrap_or_default(),
-            entity: r.get::<_, Option<String>>(3)?.unwrap_or_default(),
-            media_type: r.get::<_, Option<String>>(4)?.unwrap_or_default(),
-            path: r.get::<_, Option<String>>(5)?.unwrap_or_default(),
-            created_at: r.get::<_, Option<String>>(6)?.unwrap_or_default(),
-        })
-    })
-    .map(|rows| rows.filter_map(|r| r.ok()).collect())
-    .unwrap_or_default()
+    query_assets(conn, None, None, limit)
 }
