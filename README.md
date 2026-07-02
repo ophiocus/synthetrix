@@ -64,6 +64,16 @@ python build_index.py                     # full crawl per config.toml
 python build_index.py --type LORA --no-nsfw
 python build_index.py --no-starter        # skip the preview thumbnails
 
+# 1b. Keep the index fresh (incremental — no full re-crawl)
+python build_index.py --delta             # new-publish catch-up (Newest, early-stop)
+python build_index.py --refresh           # re-pull known rows via /models ?ids=
+
+# 1c. Targeted crawls (filters AND onto every pass)
+python build_index.py --tag character
+python build_index.py --query "cyberpunk" --type LORA
+python build_index.py --username someCreator
+python build_index.py --checkpoint-type Merge --type Checkpoint
+
 # 2. Browse and choose
 python pick.py --type Checkpoint --base "Flux.1 D" --limit 20
 python pick.py --type LORA --sort rating --min-downloads 5000
@@ -91,7 +101,15 @@ with **trigger words** + the author's recommended-settings notes.
 
 - **Cursor pagination is mandatory** for deep crawls: `page*limit > 1000` → 429.
   The client uses `metadata.nextCursor` automatically.
-- `query` (full-text) is incompatible with `page` — cursor only.
+- `query` (full-text) switches the API to **Meilisearch offset pagination**
+  (numeric `metadata.nextPage`); the client follows that as a fallback when no
+  cursor is returned.
+- **No `updatedAt`/updated-since filter exists** on `/models`, and models carry
+  no `updatedAt` field — so `--delta` is *client-computed*: it crawls `Newest`
+  and stops each pass after `stop_after_known` consecutive already-indexed ids
+  (publish order tracks id). There is likewise **no bulk metadata dump** to
+  download; `catalog.sqlite` *is* the local metadata database, kept current by
+  `--delta` (new publishes) and `--refresh` (freshen known rows via `?ids=`).
 - `limit` max is 100. Be polite: `requests_per_min` throttles + backs off on 429.
 - **The `/images` `meta` field is stripped** (empty for ~all images, SFW & NSFW).
   The only reliable source for the recipe is the **original PNG's text chunks** —

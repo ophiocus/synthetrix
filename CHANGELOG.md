@@ -9,6 +9,27 @@ app's runtime version is derived from the latest `v*` git tag (`app/build.rs` �
 
 ## [Unreleased]
 
+## [0.1.14] - 2026-07-01
+
+### Added
+- **Fetcher search filters.** `build_index.py` now exposes the `/models` filters
+  it wasn't using — `--query` (full-text/Meilisearch), `--tag`, `--username`, and
+  `--checkpoint-type` — ANDed onto every crawl pass, so coverage is no longer
+  locked to the `type × base_model` grid. `iter_models` follows Meilisearch's
+  numeric `nextPage` as a fallback when `query` mode returns no cursor.
+- **`--delta` catch-up mode.** CivitAI has no updated-since filter, so the delta
+  is client-computed: crawl `Newest` and stop each pass after
+  `[crawl.delta] stop_after_known` consecutive already-indexed ids. Cheap way to
+  pick up new publishes without a full re-crawl.
+- **`--refresh` mode.** Re-pulls the full JSON for every model already in the
+  catalog via the `/models ?ids=` filter (100/call, new `CivitAIClient.models_by_ids`),
+  freshening stats/versions/files/images for known rows.
+
+### Notes
+- Harvester/CLI feature only — no change to the desktop binary's behavior. The
+  catalog (`catalog.sqlite`) is the local metadata database; there is no bulk
+  CivitAI dump to mirror. Version bumped to carry the tagged source release.
+
 ## [0.1.13] - 2026-07-01
 
 ### Fixed

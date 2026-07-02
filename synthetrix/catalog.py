@@ -101,6 +101,12 @@ def connect(catalog_dir: str | Path) -> sqlite3.Connection:
     return conn
 
 
+def known_model_ids(conn: sqlite3.Connection) -> list[int]:
+    """Every model_id currently in the catalog — the set the delta crawl and
+    the ids-refresh pass diff against."""
+    return [r["model_id"] for r in conn.execute("SELECT model_id FROM models")]
+
+
 def _hash(file_obj: dict, kind: str) -> str | None:
     return (file_obj.get("hashes") or {}).get(kind)
 

@@ -34,6 +34,13 @@ nsfw        = true        # also gather the mature/Red top-N (needs a Red-opted 
 top_n       = 150         # items kept per (type x base_model x query x scope)
 page_size   = 100         # API max
 
+# Delta catch-up (`build_index.py --delta`). CivitAI has no updated-since
+# filter, so the delta is client-computed: crawl Newest and stop each pass
+# once we hit `stop_after_known` consecutive models already in the catalog.
+[crawl.delta]
+period           = "Week"  # Newest window to scan (Day|Week|Month|...)
+stop_after_known = 25      # consecutive known-id hits that end a pass
+
 # Each query is a distinct ranking lens; results are merged + deduped.
 [[crawl.query]]
 sort   = "Most Downloaded"
