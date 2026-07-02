@@ -9,6 +9,18 @@ app's runtime version is derived from the latest `v*` git tag (`app/build.rs` �
 
 ## [Unreleased]
 
+## [0.1.21] - 2026-07-01
+
+### Fixed
+- **The workflow now shows the model's own file name — the one next to the label.**
+  An example image belongs to a specific downloaded model, but its workflow carried
+  the *author's* filename in the loader. The primary loader is now forced to the
+  manifest row's actual file (`file_name`), routed by model type: a Checkpoint sets
+  the checkpoint/UNET loader, a LORA sets the LoRA loader (leaving the base
+  checkpoint alone), VAE→VAE, etc. Applied to both the in-app graph and the
+  open-in-ComfyUI export, so the label, the file on disk, and the loaded variable
+  all match. +2 tests.
+
 ## [0.1.20] - 2026-07-01
 
 ### Fixed

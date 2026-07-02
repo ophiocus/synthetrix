@@ -1887,7 +1887,15 @@ pub fn manifest(app: &mut SynthetrixApp, ui: &mut egui::Ui) {
     // open the silverbox for a clicked thumbnail / info button (converts + caches
     // the missing side), then reflect any new files back into the strip cache.
     if let Some((mid, img, wf, pr, info)) = lb_open.into_inner() {
-        let lb = crate::app::Lightbox::open(mid, &img, wf, pr, info);
+        // The model this image illustrates → its real downloaded file + type,
+        // forced into the workflow's primary loader.
+        let (mfile, mtype) = app
+            .manifest
+            .iter()
+            .find(|r| r.model_id == mid)
+            .map(|r| (r.file_name.clone(), r.model_type.clone()))
+            .unwrap_or_default();
+        let lb = crate::app::Lightbox::open(mid, &img, wf, pr, info, &mfile, &mtype);
         if let Some(list) = app.manifest_imgs.get_mut(&mid) {
             if let Some(entry) = list.iter_mut().find(|(p, _, _)| p == &img) {
                 entry.1 = lb.wf_path.clone();
@@ -1967,6 +1975,8 @@ pub fn manifest(app: &mut SynthetrixApp, ui: &mut egui::Ui) {
                             .and_then(|p| std::fs::read_to_string(p).ok());
                         let vault = comfy_vault.clone();
                         let nvme = comfy_nvme.clone();
+                        let mtype = lb.model_type.clone();
+                        let mfile = lb.model_file.clone();
                         let status = lb.comfy_status.clone();
                         std::thread::spawn(move || {
                             let msg = match crate::comfy::open_in_comfy(
@@ -1974,6 +1984,8 @@ pub fn manifest(app: &mut SynthetrixApp, ui: &mut egui::Ui) {
                                 wf.as_deref(),
                                 &vault,
                                 &nvme,
+                                &mtype,
+                                &mfile,
                             ) {
                                 Ok(()) => "Opened in ComfyUI — check the browser tab.".to_string(),
                                 Err(e) => e,

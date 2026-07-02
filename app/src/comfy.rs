@@ -75,6 +75,8 @@ pub fn open_in_comfy(
     wf_json: Option<&str>,
     vault_root: &str,
     nvme_root: &str,
+    model_type: &str,
+    model_file: &str,
 ) -> Result<(), String> {
     // Fail fast with an actionable message when ComfyUI isn't up: otherwise the
     // upload below errors deep in reqwest and (in a windowed app) that goes nowhere.
@@ -83,10 +85,12 @@ pub fn open_in_comfy(
     }
     let bytes = std::fs::read(image_path).map_err(|e| format!("read image: {e}"))?;
     let client = reqwest::blocking::Client::new();
-    // Resolve the workflow's model loaders to a model ComfyUI can actually load:
-    // keep it if installed, else find the same model in the vault and hotload it
-    // (rewriting the name to the real file), else leave it (honest "missing").
-    let patched = wf_json.map(|w| patch_model_names(&client, w, vault_root, nvme_root));
+    // First force the primary loader to THIS model's real file, then resolve the
+    // remaining loaders (keep if installed, hotload from vault, else honest-missing).
+    let patched = wf_json.map(|w| {
+        let forced = force_primary_model(w, model_type, model_file);
+        patch_model_names(&client, &forced, vault_root, nvme_root)
+    });
     let png = match patched.as_deref() {
         Some(wf) => prepare_png(&bytes, wf)?,
         None => bytes.clone(),
@@ -173,12 +177,6 @@ fn obj_enum(client: &reqwest::blocking::Client, node: &str, field: &str) -> Vec<
         .unwrap_or_default()
 }
 
-/// Tokenize a model filename into significant lowercase tokens, splitting on
-/// non-alphanumerics AND camelCase / letter-digit boundaries, keeping tokens of
-/// length >= 3. Lets us recognize the SAME model under a different filename:
-/// "2758FluxAsianUtopian_v51KreaFp8Noclip.safetensors" and
-/// "2758_hinaAsianFlux1-krea-dev_v51-fp8_noCLIP.safetensors" share
-/// {2758, asian, flux, krea, noclip}.
 /// The bare filename of a model reference: drops any author subfolder path, on
 /// either separator ("GGUFFlux\\Z\\WIP\\Fux.gguf" -> "Fux.gguf", "flux/vae.st" ->
 /// "vae.st"). ComfyUI enum values and vault files are matched on this.
@@ -188,6 +186,12 @@ fn base(name: &str) -> &str {
         .unwrap_or(name)
 }
 
+/// Tokenize a model filename into significant lowercase tokens, splitting on
+/// non-alphanumerics AND camelCase / letter-digit boundaries, keeping tokens of
+/// length >= 3. Lets us recognize the SAME model under a different filename:
+/// "2758FluxAsianUtopian_v51KreaFp8Noclip.safetensors" and
+/// "2758_hinaAsianFlux1-krea-dev_v51-fp8_noCLIP.safetensors" share
+/// {2758, asian, flux, krea, noclip}.
 fn tokens(name: &str) -> HashSet<String> {
     let name = base(name);
     let stem = name.rsplit_once('.').map(|(a, _)| a).unwrap_or(name);
@@ -284,6 +288,87 @@ fn loader_slots(class_type: &str) -> Vec<Slot> {
         "UpscaleModelLoader" => vec![slot(0, "model_name", "upscale_models")],
         _ => vec![],
     }
+}
+
+/// The loader classes (preference order) a model TYPE loads through. For a
+/// Checkpoint we prefer a real CheckpointLoader but fall back to UNET/GGUF-UNET
+/// (Flux ships as a diffusion model). Empty => no forcing for this type.
+fn type_loader_classes(model_type: &str) -> &'static [&'static str] {
+    match model_type {
+        "Checkpoint" => &["CheckpointLoader", "UNETLoader", "UnetLoaderGGUF"],
+        "LORA" | "LoCon" => &["LoraLoader"],
+        "VAE" => &["VAELoader"],
+        "Controlnet" => &["ControlNetLoader"],
+        "Upscaler" => &["UpscaleModelLoader"],
+        _ => &[],
+    }
+}
+
+fn class_matches(t: &str, want: &str) -> bool {
+    match want {
+        "CheckpointLoader" => t.contains("CheckpointLoader"),
+        "UnetLoaderGGUF" => t.starts_with("UnetLoaderGGUF"),
+        "LoraLoader" => t == "LoraLoader" || t == "LoraLoaderModelOnly",
+        "ControlNetLoader" => t.contains("ControlNetLoader"),
+        other => t == other, // UNETLoader, VAELoader, UpscaleModelLoader
+    }
+}
+
+/// Force the workflow's PRIMARY loader for `model_type` to `file_name` — the real
+/// downloaded file of the manifest row this image belongs to. The example workflow
+/// then points at the model it actually illustrates, using the local file name, not
+/// the author's. Rewrites the first matching loader (in `type_loader_classes`
+/// preference order) and stops. No-op if the type has no loader or the graph has
+/// no matching node.
+pub fn force_primary_model(wf: &str, model_type: &str, file_name: &str) -> String {
+    let classes = type_loader_classes(model_type);
+    if classes.is_empty() || file_name.trim().is_empty() {
+        return wf.to_string();
+    }
+    let mut v: serde_json::Value = match serde_json::from_str(wf) {
+        Ok(v) => v,
+        Err(_) => return wf.to_string(),
+    };
+    let is_ui = v.get("nodes").map(|n| n.is_array()).unwrap_or(false);
+    let val = serde_json::Value::String(file_name.to_string());
+    for want in classes {
+        if is_ui {
+            if let Some(nodes) = v.get_mut("nodes").and_then(|n| n.as_array_mut()) {
+                for n in nodes.iter_mut() {
+                    let t = n.get("type").and_then(|x| x.as_str()).unwrap_or("");
+                    if !class_matches(t, want) {
+                        continue;
+                    }
+                    if let Some(s) = loader_slots(t).first() {
+                        if let Some(wv) = n.get_mut("widgets_values").and_then(|w| w.as_array_mut())
+                        {
+                            if wv.len() > s.ui_index {
+                                wv[s.ui_index] = val.clone();
+                                return serde_json::to_string(&v)
+                                    .unwrap_or_else(|_| wf.to_string());
+                            }
+                        }
+                    }
+                }
+            }
+        } else if let Some(obj) = v.as_object_mut() {
+            for (_, n) in obj.iter_mut() {
+                let t = n.get("class_type").and_then(|x| x.as_str()).unwrap_or("");
+                if !class_matches(t, want) {
+                    continue;
+                }
+                if let Some(s) = loader_slots(t).first() {
+                    if let Some(inp) = n.get_mut("inputs").and_then(|i| i.as_object_mut()) {
+                        if inp.get(s.field).and_then(|x| x.as_str()).is_some() {
+                            inp.insert(s.field.to_string(), val.clone());
+                            return serde_json::to_string(&v).unwrap_or_else(|_| wf.to_string());
+                        }
+                    }
+                }
+            }
+        }
+    }
+    wf.to_string()
 }
 
 /// Vault subdirs to search when hotloading, keyed by the target subdir. Big model
@@ -518,6 +603,30 @@ mod tests {
             best_match(wanted, &installed).as_deref(),
             Some("2758_hinaAsianFlux1-krea-dev_v51-fp8_noCLIP.safetensors")
         );
+    }
+
+    #[test]
+    fn force_primary_sets_matching_loader_only() {
+        // A LoRA row must set the LoraLoader, leaving the checkpoint alone.
+        let wf = r#"{"nodes":[
+            {"type":"CheckpointLoaderSimple","widgets_values":["base.safetensors"]},
+            {"type":"LoraLoader","widgets_values":["author_lora.safetensors",1.0,1.0]}
+        ]}"#;
+        let out = force_primary_model(wf, "LORA", "myLora_v2.safetensors");
+        assert!(out.contains("myLora_v2.safetensors"));
+        assert!(out.contains("base.safetensors")); // checkpoint untouched
+        assert!(!out.contains("author_lora.safetensors"));
+    }
+
+    #[test]
+    fn force_primary_checkpoint_falls_back_to_unet() {
+        // A Flux "Checkpoint" with only a GGUF UNET loader still gets forced.
+        let wf = r#"{"nodes":[
+            {"type":"UnetLoaderGGUF","widgets_values":["GGUFFlux\\Z\\author.gguf"]}
+        ]}"#;
+        let out = force_primary_model(wf, "Checkpoint", "myFlux_Q8.gguf");
+        assert!(out.contains("myFlux_Q8.gguf"));
+        assert!(!out.contains("author.gguf"));
     }
 
     #[test]

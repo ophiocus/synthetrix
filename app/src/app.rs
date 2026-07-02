@@ -139,6 +139,11 @@ impl Default for PickerUi {
 /// other via `convert` and caches it next to the image.
 pub struct Lightbox {
     pub model_id: i64,
+    /// The manifest row's actual downloaded file + its type — the model this image
+    /// illustrates. Forced into the workflow's primary loader so the graph shows
+    /// the real local file, not the author's arbitrary filename.
+    pub model_file: String,
+    pub model_type: String,
     pub image_path: String,
     pub wf_path: Option<String>,
     pub pr_path: Option<String>,
@@ -158,6 +163,8 @@ impl Lightbox {
         wf: Option<String>,
         pr: Option<String>,
         show_info: bool,
+        model_file: &str,
+        model_type: &str,
     ) -> Self {
         use std::path::Path;
         let p = Path::new(image_path);
@@ -206,9 +213,16 @@ impl Lightbox {
             (w, p) => (w, p),
         };
 
+        // Force the primary loader to THIS model's real downloaded file, so the
+        // displayed graph shows the file name from the manifest row — not the
+        // author's arbitrary filename.
+        let wf_text =
+            wf_text.map(|w| crate::comfy::force_primary_model(&w, model_type, model_file));
         let wf_graph = wf_text.as_deref().and_then(crate::wfgraph::parse);
         Self {
             model_id,
+            model_file: model_file.to_string(),
+            model_type: model_type.to_string(),
             image_path: image_path.to_string(),
             wf_path,
             pr_path,
