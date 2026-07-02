@@ -146,6 +146,8 @@ pub struct Lightbox {
     pub params_text: String,
     pub show_info: bool,
     pub note: Option<String>,
+    /// Result of the async "Open in ComfyUI" thread, drained into `note` each frame.
+    pub comfy_status: std::sync::Arc<std::sync::Mutex<Option<String>>>,
 }
 
 impl Lightbox {
@@ -214,6 +216,7 @@ impl Lightbox {
             params_text: pr_text.unwrap_or_default(),
             show_info,
             note,
+            comfy_status: std::sync::Arc::new(std::sync::Mutex::new(None)),
         }
     }
 }

@@ -9,6 +9,22 @@ app's runtime version is derived from the latest `v*` git tag (`app/build.rs` �
 
 ## [Unreleased]
 
+## [0.1.15] - 2026-07-01
+
+### Fixed
+- **"Open workflow in ComfyUI" now reports what actually happened.** When ComfyUI
+  wasn't running, `open_in_comfy` uploaded first and errored deep in reqwest — the
+  browser never opened and the failure went to `eprintln!` (invisible in a windowed
+  app), so the button looked dead. Now it preflights `:8188` and fails fast with an
+  actionable message, and the async result (success or the real error) is drained
+  back into the lightbox note instead of being swallowed. Errors show amber, success
+  green.
+- **Windows: the open URL was truncated at `&`.** `cmd start "" <url>` split the
+  `?synflow=…&synname=…` URL on the `&`, dropping everything after it. The redundant
+  `synname` param is gone (the view URL already carries `filename=…`, and the bridge
+  reads the workflow from the file content, not the display name), so the opened URL
+  is now a single unbroken `?synflow=`.
+
 ## [0.1.14] - 2026-07-01
 
 ### Added

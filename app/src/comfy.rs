@@ -56,6 +56,18 @@ fn prepare_png(bytes: &[u8], wf: &str) -> Result<Vec<u8>, String> {
         .ok_or_else(|| "failed to embed workflow".into())
 }
 
+/// Is a ComfyUI server answering on :8188? Fast preflight so the UI can tell the
+/// user "start ComfyUI" instead of silently failing the upload. Connection-refused
+/// is immediate on localhost; the timeout only bounds a wedged server.
+pub fn is_running() -> bool {
+    reqwest::blocking::Client::builder()
+        .timeout(std::time::Duration::from_millis(1500))
+        .build()
+        .and_then(|c| c.get(format!("{COMFY}/")).send())
+        .map(|r| r.status().is_success())
+        .unwrap_or(false)
+}
+
 /// Open `image_path`'s workflow in the running ComfyUI. Blocking (run off the UI
 /// thread). `wf_json` is the workflow text to embed if the PNG lacks one.
 pub fn open_in_comfy(
@@ -64,6 +76,11 @@ pub fn open_in_comfy(
     vault_root: &str,
     nvme_root: &str,
 ) -> Result<(), String> {
+    // Fail fast with an actionable message when ComfyUI isn't up: otherwise the
+    // upload below errors deep in reqwest and (in a windowed app) that goes nowhere.
+    if !is_running() {
+        return Err("ComfyUI isn't running on :8188 — start it, then click again.".into());
+    }
     let bytes = std::fs::read(image_path).map_err(|e| format!("read image: {e}"))?;
     let client = reqwest::blocking::Client::new();
     // Resolve the workflow's model loaders to a model ComfyUI can actually load:
@@ -119,7 +136,11 @@ pub fn open_in_comfy(
         enc(typ),
         enc(subfolder)
     );
-    let url = format!("{COMFY}/?synflow={}&synname={}", enc(&view), enc(name));
+    // Only ?synflow= — no &synname (the view URL already carries filename=…, and
+    // the `&` would be split by `cmd start` on Windows, truncating the URL). The
+    // bridge reads the workflow from the file content, not the display name.
+    let _ = name;
+    let url = format!("{COMFY}/?synflow={}", enc(&view));
     open_url(&url)
 }
 

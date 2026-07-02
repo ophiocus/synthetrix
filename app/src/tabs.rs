@@ -1967,18 +1967,44 @@ pub fn manifest(app: &mut SynthetrixApp, ui: &mut egui::Ui) {
                             .and_then(|p| std::fs::read_to_string(p).ok());
                         let vault = comfy_vault.clone();
                         let nvme = comfy_nvme.clone();
+                        let status = lb.comfy_status.clone();
                         std::thread::spawn(move || {
-                            if let Err(e) =
-                                crate::comfy::open_in_comfy(&img, wf.as_deref(), &vault, &nvme)
-                            {
-                                eprintln!("[synthetrix] open in ComfyUI: {e}");
+                            let msg = match crate::comfy::open_in_comfy(
+                                &img,
+                                wf.as_deref(),
+                                &vault,
+                                &nvme,
+                            ) {
+                                Ok(()) => "Opened in ComfyUI — check the browser tab.".to_string(),
+                                Err(e) => e,
+                            };
+                            if let Ok(mut g) = status.lock() {
+                                *g = Some(msg);
                             }
                         });
-                        lb.note = Some("Sent to ComfyUI — it should open the workflow.".into());
+                        lb.note = Some("Sending to ComfyUI…".into());
+                    }
+                    // Drain the async open-in-ComfyUI result into the note. While a
+                    // send is in flight, keep repainting so the outcome shows without
+                    // the user having to move the mouse.
+                    if let Some(msg) = lb.comfy_status.lock().ok().and_then(|mut g| g.take()) {
+                        lb.note = Some(msg);
+                    }
+                    if lb.note.as_deref() == Some("Sending to ComfyUI…") {
+                        ui.ctx()
+                            .request_repaint_after(std::time::Duration::from_millis(250));
                     }
                     if let Some(note) = &lb.note {
                         ui.separator();
-                        ui.colored_label(egui::Color32::from_rgb(120, 200, 140), note);
+                        let ok = !note.contains("isn't running")
+                            && !note.starts_with("ComfyUI /")
+                            && !note.contains("failed");
+                        let color = if ok {
+                            egui::Color32::from_rgb(120, 200, 140)
+                        } else {
+                            egui::Color32::from_rgb(220, 150, 90)
+                        };
+                        ui.colored_label(color, note);
                     }
                 });
                 ui.separator();
