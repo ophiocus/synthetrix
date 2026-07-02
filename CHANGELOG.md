@@ -9,6 +9,39 @@ app's runtime version is derived from the latest `v*` git tag (`app/build.rs` �
 
 ## [Unreleased]
 
+## [0.1.22] - 2026-07-02
+
+### Fixed
+- **A1111 → ComfyUI conversion now parses the language, not a fixed template.**
+  The old converter emitted a hardcoded 7-node graph and threw away everything
+  A1111 encodes beyond the basics — most damagingly, inline `<lora:…>` tags were
+  dumped into the prompt as literal text. The rewrite parses the A1111 prompt DSL
+  and builds a graph whose *shape* matches the recipe:
+  - `<lora:name:wm[:wc]>` / `<lyco:…>` → a chained **LoraLoader** stack (split
+    model/clip weights preserved), threaded between the checkpoint and the sampler
+    — not literal prompt text.
+  - `Clip skip: N` → a **CLIPSetLastLayer** node at `-N` feeding the encoders.
+  - `VAE: …` → a **VAELoader** override wired into the decode (instead of the
+    checkpoint's baked VAE).
+  - `Schedule type: …` (newer A1111 splits it out of the sampler) → the ComfyUI
+    scheduler, overriding the sampler-embedded default; broader sampler map
+    (3M SDE, 2S a, LCM, exponential, …).
+  - **Hires fix** (`Hires upscale/steps/upscaler`, `Denoising strength`) → a
+    `LatentUpscaleBy` + a second **KSampler** at the hires denoise.
+  - Quote-aware settings split so `Lora hashes: "a: 1, b: 2"` no longer corrupts
+    the parse.
+  - The reverse direction (workflow → params) now re-emits `<lora:…>` tags, clip
+    skip, and VAE, so a captured ComfyUI graph round-trips to faithful A1111 text.
+  +4 tests.
+
+### Notes
+- The ComfyUI loader dropdowns are populated from `GET /object_info/<Node>`
+  (`input.required.<field>[0]`), which ComfyUI fills by scanning its model folders.
+  Synthetrix already reads that exact list (`obj_enum`) when opening a workflow and,
+  as of 0.1.20, resolves **every** loader class against it — exact match, then
+  best-match, then hotload-from-vault — so a workflow always points at a name the
+  picker actually offers.
+
 ## [0.1.21] - 2026-07-01
 
 ### Fixed
