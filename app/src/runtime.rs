@@ -348,6 +348,59 @@ pub fn runtime(app: &mut SynthetrixApp, ui: &mut egui::Ui) {
             });
     }
 
+    // Provision: base program + post-install accessories.
+    ui.separator();
+    egui::CollapsingHeader::new("Provision (base program + accessories)")
+        .default_open(false)
+        .show(ui, |ui| {
+            ui.label(
+                egui::RichText::new(
+                    "Bring up or repair the runtime. Base = ComfyUI + venv + torch; \
+                     accessories = ComfyUI-Manager + custom-node packs. Each step is \
+                     idempotent; heavy (git clone + pip), so it runs in the background.",
+                )
+                .weak(),
+            );
+            ui.horizontal_wrapped(|ui| {
+                if ui
+                    .add_enabled(!busy, egui::Button::new("⤓ Provision all"))
+                    .on_hover_text("Base then accessories, in order, then heal paths")
+                    .clicked()
+                {
+                    spawn_cmd(app, &["provision", "--all", "--apply"], false);
+                }
+                if ui
+                    .add_enabled(!busy, egui::Button::new("👁 Dry-run all"))
+                    .on_hover_text("Show the full plan without changing anything")
+                    .clicked()
+                {
+                    spawn_cmd(app, &["provision", "--all"], false);
+                }
+                ui.separator();
+                if ui
+                    .add_enabled(!busy, egui::Button::new("🧩 ComfyUI-Manager"))
+                    .on_hover_text("Install the in-UI node install/update accessory")
+                    .clicked()
+                {
+                    spawn_cmd(app, &["provision", "--manager", "--apply"], false);
+                }
+                if ui
+                    .add_enabled(!busy, egui::Button::new("🧩 Node packs"))
+                    .on_hover_text("Clone the recommended custom-node packs that are missing")
+                    .clicked()
+                {
+                    spawn_cmd(app, &["provision", "--nodes", "--apply"], false);
+                }
+                if ui
+                    .add_enabled(!busy, egui::Button::new("🔩 Torch"))
+                    .on_hover_text("Reinstall torch from the hardware-selected CUDA channel")
+                    .clicked()
+                {
+                    spawn_cmd(app, &["provision", "--torch", "--apply"], false);
+                }
+            });
+        });
+
     // Manager location config.
     ui.separator();
     egui::CollapsingHeader::new("Manager location")

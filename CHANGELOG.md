@@ -9,6 +9,19 @@ app's runtime version is derived from the latest `v*` git tag (`app/build.rs` �
 
 ## [Unreleased]
 
+## [0.1.17] - 2026-07-01
+
+### Added
+- **Lifecycle control now covers accessories, not just the base program.**
+  `comfyctl provision` gained `--manager` (installs **ComfyUI-Manager**, the in-UI
+  node install/update accessory) and `--all` — an orchestrated bring-up that runs
+  base → accessories in dependency order (ComfyUI → venv → torch → ComfyUI-Manager
+  → custom-node packs → heal paths), each step idempotent. Preflight/doctor gained a
+  dedicated **ComfyUI-Manager** check.
+- **Runtime tab provision panel.** A new "Provision (base program + accessories)"
+  section with **Provision all**, **Dry-run all**, **ComfyUI-Manager**, **Node
+  packs**, and **Torch** buttons — post-install setup without dropping to the CLI.
+
 ## [0.1.16] - 2026-07-01
 
 ### Added

@@ -55,6 +55,7 @@ def run(cfg: dict, allow_server_launch: bool = True) -> PreflightReport:
         checks.check_comfy_install(profile),
         checks.check_paths(cfg, ccfg),
         checks.check_custom_nodes(ccfg),
+        checks.check_manager(ccfg),
     ):
         results.append(r)
         if r.status == FAIL and r.blocking:

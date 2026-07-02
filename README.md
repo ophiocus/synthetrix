@@ -103,8 +103,17 @@ python comfyctl.py preflight         # checklist + warm up ComfyUI if fundamenta
 python comfyctl.py launch | stop     # server lifecycle (detached; survives the launcher)
 python comfyctl.py rules             # hardware -> runtime compatibility verdict
 python comfyctl.py heal --paths      # rewrite extra_model_paths.yaml to the SoT
-python comfyctl.py provision --torch --apply   # (re)provision venv/torch/nodes/comfy
+python comfyctl.py provision --all --apply     # base (comfy+venv+torch) THEN
+                                               # accessories (ComfyUI-Manager + node packs)
+python comfyctl.py provision --manager --apply # just ComfyUI-Manager
+python comfyctl.py provision --nodes --apply   # just the recommended custom-node packs
+python comfyctl.py provision --torch --apply   # just (re)install torch
 ```
+
+Provisioning is dry-run by default; add `--apply` to execute. `--all` runs the
+steps in dependency order (ComfyUI → venv → torch → ComfyUI-Manager → nodes →
+heal paths), each idempotent. The desktop **Runtime** tab exposes the same steps
+as buttons.
 
 Exit codes (`preflight`/`doctor`): `0` ok/warn, `1` non-blocking fail, `2` BLOCKED.
 The `[comfy]` block in `config.toml` sets `comfy_root` (default `E:\ComfyUI`), `venv`,

@@ -114,7 +114,9 @@ def main(argv=None):
     p.set_defaults(fn=cmd_heal)
 
     p = sub.add_parser("provision")
-    for f in ("paths", "nodes", "torch", "venv", "comfy"):
+    p.add_argument("--all", action="store_true",
+                   help="base (comfy+venv+torch) then accessories (manager+nodes) + paths")
+    for f in ("paths", "nodes", "manager", "torch", "venv", "comfy"):
         p.add_argument(f"--{f}", action="store_true")
     p.add_argument("--apply", action="store_true", help="actually run (default: dry-run)")
     p.set_defaults(fn=cmd_provision)

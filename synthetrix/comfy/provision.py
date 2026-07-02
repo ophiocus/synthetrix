@@ -33,6 +33,9 @@ NODE_REPOS = {
     "comfyui-lora-tag-loader": "https://github.com/badjeff/comfyui_lora_tag_loader",
 }
 COMFY_REPO = "https://github.com/comfyanonymous/ComfyUI"
+# ComfyUI-Manager: the in-UI accessory manager, installed as a custom node.
+MANAGER_REPO = "https://github.com/ltdrdata/ComfyUI-Manager"
+MANAGER_DIR = "ComfyUI-Manager"
 
 
 def _do(cmd: list[str], apply: bool, cwd: str | None = None, log: list | None = None) -> bool:
@@ -91,6 +94,24 @@ def provision_nodes(cfg: dict, apply: bool = False) -> str:
     return f"{'installed' if apply else 'planned'} {len(missing)} node pack(s): {missing}"
 
 
+def provision_manager(cfg: dict, apply: bool = False) -> str:
+    """Install ComfyUI-Manager (the in-UI node install/update accessory) into
+    custom_nodes, and pip-install its requirements. Idempotent."""
+    ccfg = comfy_cfg(cfg)
+    cn = Path(ccfg["comfy_root"]) / "custom_nodes"
+    dst = cn / MANAGER_DIR
+    if dst.is_dir() or (cn / "comfyui-manager").is_dir():
+        return f"ComfyUI-Manager already present at {dst}"
+    if apply:
+        cn.mkdir(parents=True, exist_ok=True)
+    _do(["git", "clone", "--depth", "1", MANAGER_REPO, str(dst)], apply)
+    py = venv_python(ccfg["venv"])
+    req = dst / "requirements.txt"
+    if apply and req.exists() and py.exists():
+        _do([str(py), "-m", "pip", "install", "-r", str(req)], apply)
+    return f"{'installed' if apply else 'planned'} ComfyUI-Manager into {dst}"
+
+
 def provision_torch(cfg: dict, apply: bool = False) -> str:
     ccfg = comfy_cfg(cfg)
     spec = evaluate(probe(cfg))
@@ -131,6 +152,24 @@ def provision_comfy(cfg: dict, apply: bool = False) -> str:
     return f"{'cloned' if apply else 'planned'} ComfyUI into {root}"
 
 
+def provision_all(cfg: dict, apply: bool = False) -> str:
+    """Full runtime bring-up: base program then accessories, in dependency order.
+    base: ComfyUI -> venv -> torch;  accessories: ComfyUI-Manager -> node packs;
+    then heal model paths. Each step is individually idempotent."""
+    steps = [
+        ("comfy", provision_comfy),
+        ("venv", provision_venv),
+        ("torch", provision_torch),
+        ("manager", provision_manager),
+        ("nodes", provision_nodes),
+        ("paths", provision_paths),
+    ]
+    out = []
+    for name, fn in steps:
+        out.append(f"[{name}] {fn(cfg, apply)}")
+    return "\n".join(out)
+
+
 # ---- lifecycle --------------------------------------------------------------
 def stop_server(ccfg: dict) -> tuple[bool, str]:
     """Best-effort: kill whatever listens on the ComfyUI port (Windows netstat)."""
@@ -158,18 +197,25 @@ def stop_server(ccfg: dict) -> tuple[bool, str]:
 
 # ---- CLI dispatch -----------------------------------------------------------
 def run(cfg: dict, args) -> int:
-    any_flag = any(getattr(args, f) for f in ("paths", "nodes", "torch", "venv", "comfy"))
+    flags = ("all", "paths", "nodes", "manager", "torch", "venv", "comfy")
+    any_flag = any(getattr(args, f, False) for f in flags)
     if not any_flag:
-        print("specify what to provision: --paths --nodes --torch --venv --comfy  [--apply]")
+        print("specify what to provision: --all | --comfy --venv --torch "
+              "--manager --nodes --paths  [--apply]")
         return 1
     if not args.apply:
         print("=== DRY-RUN (add --apply to execute) ===")
+    if getattr(args, "all", False):
+        print(">>", provision_all(cfg, args.apply))
+        return 0
     if args.comfy:
         print(">>", provision_comfy(cfg, args.apply))
     if args.venv:
         print(">>", provision_venv(cfg, args.apply))
     if args.torch:
         print(">>", provision_torch(cfg, args.apply))
+    if getattr(args, "manager", False):
+        print(">>", provision_manager(cfg, args.apply))
     if args.nodes:
         print(">>", provision_nodes(cfg, args.apply))
     if args.paths:

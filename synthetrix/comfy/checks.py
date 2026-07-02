@@ -117,6 +117,18 @@ def check_custom_nodes(ccfg: dict) -> CheckResult:
     return CheckResult("nodes", "Custom node packs", OK, f"{len(have)} installed, recommended set present")
 
 
+def check_manager(ccfg: dict) -> CheckResult:
+    """ComfyUI-Manager is the in-UI accessory manager (install/update nodes from
+    the ComfyUI web UI). Treated as a first-class post-install accessory."""
+    cn = Path(ccfg["comfy_root"]) / "custom_nodes"
+    present = (cn / "ComfyUI-Manager").is_dir() or (cn / "comfyui-manager").is_dir()
+    if present:
+        return CheckResult("manager", "ComfyUI-Manager", OK, "installed")
+    return CheckResult("manager", "ComfyUI-Manager", WARN,
+                       "not installed (no in-UI node install/update)",
+                       "comfyctl provision --manager")
+
+
 def check_server(ccfg: dict, spec: RuntimeSpec, launch_ok: bool) -> CheckResult:
     up, msg = launch.warmup(ccfg, extra_flags=spec.launch_flags, launch=launch_ok)
     if not up:
