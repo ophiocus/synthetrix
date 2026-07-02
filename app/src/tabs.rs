@@ -822,8 +822,11 @@ pub fn lore(app: &mut SynthetrixApp, ui: &mut egui::Ui) {
                             std::cell::RefCell::new(egui_commonmark::CommonMarkCache::default());
                     }
                     LORE_MD.with(|c| {
-                        egui_commonmark::CommonMarkViewer::new("lore_md")
-                            .show(ui, &mut c.borrow_mut(), body);
+                        egui_commonmark::CommonMarkViewer::new("lore_md").show(
+                            ui,
+                            &mut c.borrow_mut(),
+                            body,
+                        );
                     });
                 }
                 None => {
@@ -1723,8 +1726,8 @@ pub fn manifest(app: &mut SynthetrixApp, ui: &mut egui::Ui) {
     }
     ui.separator();
 
-    let exp_toggle: RefCell<Vec<i64>> = RefCell::new(Vec::new());
-    // buffered lightbox open: (model_id, image_path, wf_path, pr_path, show_info)
+    let exp_toggle: RefCell<Vec<(i64, i64)>> = RefCell::new(Vec::new()); // (file_id, model_id)
+                                                                         // buffered lightbox open: (model_id, image_path, wf_path, pr_path, show_info)
     let lb_open: RefCell<Option<(i64, String, Option<String>, Option<String>, bool)>> =
         RefCell::new(None);
     let rows = &app.manifest;
@@ -1732,11 +1735,11 @@ pub fn manifest(app: &mut SynthetrixApp, ui: &mut egui::Ui) {
     let imgs_map = &app.manifest_imgs;
     egui::ScrollArea::vertical().show(ui, |ui| {
         for r in rows {
-            let is_exp = expanded.contains(&r.model_id);
+            let is_exp = expanded.contains(&r.file_id);
             ui.horizontal(|ui| {
                 let tri = if is_exp { "▼" } else { "▶" };
                 if ui.small_button(tri).on_hover_text("show captured images").clicked() {
-                    exp_toggle.borrow_mut().push(r.model_id);
+                    exp_toggle.borrow_mut().push((r.file_id, r.model_id));
                 }
                 let (col, badge) = state_badge(&r.status, r.locked);
                 ui.colored_label(col, badge);
@@ -1749,7 +1752,7 @@ pub fn manifest(app: &mut SynthetrixApp, ui: &mut egui::Ui) {
                     .on_hover_text("click to show captured images")
                     .clicked()
                 {
-                    exp_toggle.borrow_mut().push(r.model_id);
+                    exp_toggle.borrow_mut().push((r.file_id, r.model_id));
                 }
                 let resp = ui.weak(format!(
                     "[{}] {} · {:.2}GB",
@@ -1851,11 +1854,11 @@ pub fn manifest(app: &mut SynthetrixApp, ui: &mut egui::Ui) {
 
     // resolve expand toggles: flip state, and scan the gallery dir on expand
     let gallery_root = app.config.gallery_root.clone();
-    for mid in exp_toggle.into_inner() {
-        if app.manifest_expanded.remove(&mid) {
+    for (fid, mid) in exp_toggle.into_inner() {
+        if app.manifest_expanded.remove(&fid) {
             continue; // collapsed
         }
-        app.manifest_expanded.insert(mid);
+        app.manifest_expanded.insert(fid);
         let dir = std::path::Path::new(&gallery_root).join(mid.to_string());
         let mut paths: Vec<(String, Option<String>, Option<String>)> = Vec::new();
         if let Ok(entries) = std::fs::read_dir(&dir) {

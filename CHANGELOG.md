@@ -9,6 +9,17 @@ app's runtime version is derived from the latest `v*` git tag (`app/build.rs` â†
 
 ## [Unreleased]
 
+## [0.1.12] - 2026-07-01
+
+### Fixed
+- **Manifest: same-model file rows no longer share expand/collapse.** Multi-file
+  models (e.g. a WAN asset's 5 files) keyed their expand toggle off the shared
+  model_id, so they opened and closed together. Each file row now keys its own
+  file_id (captured images still resolve per-model).
+- **Installer WiX shortcut components corrected** (HKCU keypath + directory-path
+  target) so the MSI actually builds â€” ICE38/43/57/69 resolved; validated locally
+  with a real `cargo wix` build. (0.1.10/0.1.11 failed to publish on these.)
+
 ## [0.1.11] - 2026-07-01
 
 ### Changed

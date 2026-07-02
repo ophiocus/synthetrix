@@ -135,9 +135,9 @@
             <Directory Id='ProgramMenuFolder'>
                 <Component Id='AppShortcut' Guid='*'>
                     <Shortcut Id='SynthetrixStartMenu' Name='Synthetrix'
-                              Description='Synthetrix' Target='[#exe0]'
+                              Description='Synthetrix' Target='[Bin]synthetrix.exe'
                               WorkingDirectory='Bin'/>
-                    <RegistryValue Root='HKLM' Key='Software\ophiocus\Synthetrix'
+                    <RegistryValue Root='HKCU' Key='Software\ophiocus\Synthetrix'
                                    Name='StartMenuShortcut' Type='integer'
                                    Value='1' KeyPath='yes'/>
                 </Component>
@@ -146,9 +146,9 @@
             <Directory Id='DesktopFolder'>
                 <Component Id='DesktopShortcut' Guid='*'>
                     <Shortcut Id='SynthetrixDesktop' Name='Synthetrix'
-                              Description='Synthetrix' Target='[#exe0]'
+                              Description='Synthetrix' Target='[Bin]synthetrix.exe'
                               WorkingDirectory='Bin'/>
-                    <RegistryValue Root='HKLM' Key='Software\ophiocus\Synthetrix'
+                    <RegistryValue Root='HKCU' Key='Software\ophiocus\Synthetrix'
                                    Name='DesktopShortcut' Type='integer'
                                    Value='1' KeyPath='yes'/>
                 </Component>
