@@ -9,7 +9,21 @@ app's runtime version is derived from the latest `v*` git tag (`app/build.rs` �
 
 ## [Unreleased]
 
-## [0.1.18] - 2026-07-01
+## [0.1.19] - 2026-07-01
+
+### Fixed
+- **Runtime tab no longer needs (or mis-uses) a manually-typed path.** `comfyctl.py`
+  is now auto-detected at `~/synthetrix` (in addition to the cwd/exe walk), so the
+  common clone location just works with the box left blank. A wrong path in the box
+  (e.g. a lore/game repo) now *falls through* to auto-detect instead of breaking the
+  tab.
+
+### Changed
+- **Clarified the location UI.** Renamed "Manager location/root" → "comfyctl location
+  / Synthetrix repo folder", added a "(blank = auto-detect)" hint, a **Browse** and
+  **Clear** button, and a live ✔/✖ line showing exactly which `comfyctl.py` is in
+  use (or that none was found). Explains it wants the Synthetrix repo (with
+  build_index.py + app/), not a lore/game repo.
 
 ### Changed
 - **Runtime provision panel simplified to two buttons: Provision and Dry run.**

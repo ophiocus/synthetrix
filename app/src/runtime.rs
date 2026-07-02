@@ -56,16 +56,31 @@ pub struct RuntimeUi {
     pub rx: Option<mpsc::Receiver<RuntimeMsg>>,
 }
 
-/// Locate the directory holding `comfyctl.py`: an explicit config path, else walk
-/// up from the cwd and the exe dir (covers `cargo run` from `app/` and running
-/// from the repo root). None => the tab prompts the user to set it.
+/// Locate the directory holding `comfyctl.py`. Tries, in order: the explicit
+/// config path (if it actually contains comfyctl.py), then auto-detect —
+/// `~/synthetrix`, then walking up from the cwd and the exe dir. A wrong/blank
+/// config path falls THROUGH to auto-detect rather than hard-failing, so a
+/// mis-filled box doesn't break the tab. None => genuinely not found anywhere.
 fn find_manager(cfg_root: &str) -> Option<PathBuf> {
     let has = |d: &Path| d.join("comfyctl.py").is_file();
+    // 1. explicit config path, only if valid.
     let root = cfg_root.trim();
     if !root.is_empty() {
         let p = PathBuf::from(root);
-        return has(&p).then_some(p);
+        if has(&p) {
+            return Some(p);
+        }
     }
+    // 2. the conventional clone location, ~/synthetrix.
+    if let Some(home) = dirs::home_dir() {
+        for name in ["synthetrix", "Synthetrix"] {
+            let p = home.join(name);
+            if has(&p) {
+                return Some(p);
+            }
+        }
+    }
+    // 3. walk up from cwd / exe dir (covers `cargo run` and repo-local runs).
     let bases = [
         std::env::current_dir().ok(),
         std::env::current_exe()
@@ -379,39 +394,76 @@ pub fn runtime(app: &mut SynthetrixApp, ui: &mut egui::Ui) {
             });
         });
 
-    // Manager location config.
+    // comfyctl location config. `comfyctl.py` ships inside the Synthetrix repo,
+    // so this points at that repo — NOT at a lore/game repo.
     ui.separator();
-    egui::CollapsingHeader::new("Manager location")
-        .default_open(find_manager(&app.config.comfy_manager_root).is_none())
+    let resolved = find_manager(&app.config.comfy_manager_root);
+    egui::CollapsingHeader::new("comfyctl location")
+        .default_open(resolved.is_none())
         .show(ui, |ui| {
-            match find_manager(&app.config.comfy_manager_root) {
-                Some(d) => ui.weak(format!("comfyctl.py resolved at {}", d.display())),
-                None => ui.colored_label(
-                    status_color("FAIL"),
-                    "comfyctl.py not found — set the Synthetrix repo path below.",
-                ),
-            };
+            ui.label(
+                egui::RichText::new(
+                    "comfyctl.py lives in the Synthetrix repo (the one with build_index.py \
+                     and the app/ folder) — usually ~/synthetrix. Leave the box blank to \
+                     auto-detect it; only set it if auto-detect can't find it.",
+                )
+                .weak(),
+            );
             ui.horizontal(|ui| {
-                ui.label("Manager root:");
-                ui.text_edit_singleline(&mut app.config.comfy_manager_root);
-                if ui.button("📁").on_hover_text("Pick folder").clicked() {
+                ui.label("Synthetrix repo folder:");
+                let resp = ui.add(
+                    egui::TextEdit::singleline(&mut app.config.comfy_manager_root)
+                        .hint_text("(blank = auto-detect)")
+                        .desired_width(320.0),
+                );
+                if resp.lost_focus() {
+                    app.config.save();
+                }
+                if ui
+                    .button("📁 Browse")
+                    .on_hover_text("Pick the Synthetrix repo folder")
+                    .clicked()
+                {
                     if let Some(p) = rfd::FileDialog::new().pick_folder() {
                         app.config.comfy_manager_root = p.to_string_lossy().into_owned();
                         app.config.save();
                     }
                 }
+                if ui
+                    .button("Clear")
+                    .on_hover_text("Blank the box and fall back to auto-detect")
+                    .clicked()
+                {
+                    app.config.comfy_manager_root.clear();
+                    app.config.save();
+                }
             });
+            // Live validation of whatever is currently in the box / auto-detected.
+            match find_manager(&app.config.comfy_manager_root) {
+                Some(d) => {
+                    ui.colored_label(
+                        status_color("OK"),
+                        format!("✔ using comfyctl.py in {}", d.display()),
+                    );
+                }
+                None => {
+                    ui.colored_label(
+                        status_color("FAIL"),
+                        "✖ no comfyctl.py there. Pick the folder that contains \
+                         comfyctl.py + build_index.py (the Synthetrix repo).",
+                    );
+                }
+            };
             ui.horizontal(|ui| {
                 ui.label("Python:");
                 if ui
-                    .text_edit_singleline(&mut app.config.python_exe)
+                    .add(
+                        egui::TextEdit::singleline(&mut app.config.python_exe).desired_width(160.0),
+                    )
                     .lost_focus()
                 {
                     app.config.save();
                 }
             });
-            if ui.button("Save").clicked() {
-                app.config.save();
-            }
         });
 }
