@@ -49,7 +49,15 @@ fn default_projects() -> Vec<Project> {
 
 /// Persistent app config (window prefs + storage tiers + crawl knobs).
 /// Lives at %APPDATA%/Synthetrix/config.json.
+///
+/// `#[serde(default)]` at the container level is load-bearing: a config written by
+/// an older build is missing fields newer builds added. Without it, serde fails
+/// the whole deserialize on any absent field and `load()` falls back to
+/// `Config::default()` — silently wiping user data (the token, tiers, projects)
+/// on every upgrade. With it, absent fields fall back to their default and the
+/// present ones (token!) are preserved.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
 pub struct Config {
     pub dark_mode: bool,
     pub zoom: f32,

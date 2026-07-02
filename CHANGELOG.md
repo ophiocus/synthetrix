@@ -9,6 +9,19 @@ app's runtime version is derived from the latest `v*` git tag (`app/build.rs` â†
 
 ## [Unreleased]
 
+## [0.1.13] - 2026-07-01
+
+### Fixed
+- **Upgrades no longer wipe the config (token, tiers, projects).** `Config` now
+  deserializes with container-level `#[serde(default)]`, so a `config.json` from an
+  older build (missing fields newer builds added) loads cleanly instead of failing
+  the whole parse and resetting to defaults. The CivitAI token survives updates.
+- **Capture images no longer returns 0 for adopted/reconciled models.** Those were
+  stored with a stub raw JSON (no `images`), so there was nothing to pull.
+  `harvest_images` now refetches the model JSON from CivitAI by id when the stored
+  raw carries no images (real CivitAI ids only; HF/provisioned negative-ids have no
+  gallery and are skipped). Already-captured images are still skipped (idempotent).
+
 ## [0.1.12] - 2026-07-01
 
 ### Fixed

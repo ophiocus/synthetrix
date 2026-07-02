@@ -1652,17 +1652,29 @@ fn ext_for(ct: &str) -> &'static str {
 
 /// Returns (images_saved, workflows_extracted).
 fn harvest_images(st: &mut State, model_id: i64, per: u32, starter: bool) -> (usize, usize) {
-    let Some(raw) = st.conn.as_ref().and_then(|c| db::model_raw(c, model_id)) else {
-        return (0, 0);
+    let extract = |raw: Option<&Value>| -> Vec<Value> {
+        raw.and_then(|v| v.get("modelVersions"))
+            .and_then(|v| v.as_array())
+            .and_then(|a| a.first())
+            .and_then(|v0| v0.get("images"))
+            .and_then(|i| i.as_array())
+            .cloned()
+            .unwrap_or_default()
     };
-    let imgs: Vec<Value> = raw
-        .get("modelVersions")
-        .and_then(|v| v.as_array())
-        .and_then(|a| a.first())
-        .and_then(|v0| v0.get("images"))
-        .and_then(|i| i.as_array())
-        .cloned()
-        .unwrap_or_default();
+    // Prefer the stored model JSON; if it carries no example images (a model
+    // adopted / reconciled / provisioned with only a stub raw), refetch it from
+    // CivitAI by id so capture actually has something to pull. Negative ids are
+    // non-CivitAI (HF / provisioned) and have no CivitAI gallery — skip those.
+    let stored = st.conn.as_ref().and_then(|c| db::model_raw(c, model_id));
+    let mut imgs = extract(stored.as_ref());
+    if imgs.is_empty() && model_id > 0 {
+        if let Ok(full) = st.client.model_by_id(model_id) {
+            imgs = extract(Some(&full));
+        }
+    }
+    if imgs.is_empty() {
+        return (0, 0);
+    }
 
     let take: Vec<&Value> = if starter {
         imgs.iter()
