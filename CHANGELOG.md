@@ -9,6 +9,14 @@ app's runtime version is derived from the latest `v*` git tag (`app/build.rs` �
 
 ## [Unreleased]
 
+## [0.1.18] - 2026-07-01
+
+### Changed
+- **Runtime provision panel simplified to two buttons: Provision and Dry run.**
+  Both act on the full `--all` flow (base → accessories, idempotent) — the granular
+  per-step buttons (Manager / Node packs / Torch) are gone; the CLI still exposes
+  those flags for surgical use.
+
 ## [0.1.17] - 2026-07-01
 
 ### Added
