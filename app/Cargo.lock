@@ -3441,7 +3441,7 @@ dependencies = [
 
 [[package]]
 name = "synthetrix"
-version = "0.1.15"
+version = "0.1.16"
 dependencies = [
  "dirs",
  "eframe",

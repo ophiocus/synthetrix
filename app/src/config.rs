@@ -90,6 +90,14 @@ pub struct Config {
     // Generation backends.
     #[serde(default = "default_comfy_url")]
     pub comfy_url: String, // local ComfyUI REST base
+    /// Directory containing `comfyctl.py` (the Synthetrix repo root). Empty =>
+    /// auto-detect by walking up from the cwd / exe dir. The Runtime tab shells
+    /// out to it to launch/stop/doctor the managed ComfyUI.
+    #[serde(default)]
+    pub comfy_manager_root: String,
+    /// Python interpreter used to run comfyctl (empty => "python" on PATH).
+    #[serde(default = "default_python_exe")]
+    pub python_exe: String,
     /// Tripo API key for image→3D-mesh stages (empty => stage blocked).
     #[serde(default)]
     pub tripo_key: String,
@@ -103,6 +111,10 @@ pub struct Config {
 
 fn default_comfy_url() -> String {
     "http://127.0.0.1:8188".into()
+}
+
+fn default_python_exe() -> String {
+    "python".into()
 }
 
 fn default_eleven_voice() -> String {
@@ -142,6 +154,8 @@ impl Default for Config {
             per_model: 20,
             include_video: true,
             comfy_url: default_comfy_url(),
+            comfy_manager_root: String::new(),
+            python_exe: default_python_exe(),
             tripo_key: String::new(),
             elevenlabs_key: String::new(),
             elevenlabs_voice: default_eleven_voice(),

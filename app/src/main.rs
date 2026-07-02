@@ -17,6 +17,7 @@ mod pipelines;
 mod pngmeta;
 mod project;
 mod release;
+mod runtime;
 mod tabs;
 mod wfgraph;
 mod worker;

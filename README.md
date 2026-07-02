@@ -91,6 +91,25 @@ python harvest_images.py                              # downloaded models, per=c
 python harvest_images.py --all --max-models 50        # widen to any catalog model
 ```
 
+### Runtime management (comfyctl)
+
+`comfyctl` makes Synthetrix authoritative over the ComfyUI *runtime* (venv, torch,
+custom nodes, model paths, launch) the way it already is over models. The desktop
+app's **Runtime** tab is its GUI front end; the CLI is:
+
+```sh
+python comfyctl.py doctor            # read-only preflight checklist (never launches)
+python comfyctl.py preflight         # checklist + warm up ComfyUI if fundamentals pass
+python comfyctl.py launch | stop     # server lifecycle (detached; survives the launcher)
+python comfyctl.py rules             # hardware -> runtime compatibility verdict
+python comfyctl.py heal --paths      # rewrite extra_model_paths.yaml to the SoT
+python comfyctl.py provision --torch --apply   # (re)provision venv/torch/nodes/comfy
+```
+
+Exit codes (`preflight`/`doctor`): `0` ok/warn, `1` non-blocking fail, `2` BLOCKED.
+The `[comfy]` block in `config.toml` sets `comfy_root` (default `E:\ComfyUI`), `venv`,
+`host`, `port`, and `launch_args`.
+
 ## What the index gives you per model
 
 Stats (downloads/rating/thumbs), base model, NSFW flag, file size (plan against

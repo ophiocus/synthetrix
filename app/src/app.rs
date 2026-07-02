@@ -14,6 +14,7 @@ pub enum Tab {
     Prompts,
     Lore,
     Pipelines,
+    Runtime,
     Releases,
     Fetcher,
     Picker,
@@ -245,6 +246,8 @@ pub struct SynthetrixApp {
     /// Composite pipelines state.
     pub pipelines_ui: PipelinesUi,
     pub pipeline_runs: Vec<crate::project::PipelineRun>,
+    /// ComfyUI runtime-management tab state.
+    pub runtime_ui: crate::runtime::RuntimeUi,
     /// Release authority state.
     pub releases_ui: ReleasesUi,
     pub releases: Vec<crate::project::ReleaseRow>,
@@ -322,6 +325,7 @@ impl SynthetrixApp {
             lore_kinds: Vec::new(),
             pipelines_ui: PipelinesUi::default(),
             pipeline_runs: Vec::new(),
+            runtime_ui: crate::runtime::RuntimeUi::default(),
             releases_ui: ReleasesUi::default(),
             releases: Vec::new(),
             status: None,
@@ -484,6 +488,7 @@ impl eframe::App for SynthetrixApp {
                 ui.selectable_value(&mut self.tab, Tab::Prompts, "✎ Prompts");
                 ui.selectable_value(&mut self.tab, Tab::Lore, "📖 Lore");
                 ui.selectable_value(&mut self.tab, Tab::Pipelines, "⛓ Pipelines");
+                ui.selectable_value(&mut self.tab, Tab::Runtime, "🖥 Runtime");
                 ui.selectable_value(&mut self.tab, Tab::Releases, "🏷 Releases");
                 ui.selectable_value(&mut self.tab, Tab::Fetcher, "⬇ Fetcher");
                 ui.selectable_value(&mut self.tab, Tab::Picker, "☑ Picker");
@@ -554,6 +559,7 @@ impl eframe::App for SynthetrixApp {
             Tab::Prompts => crate::tabs::prompts(self, ui),
             Tab::Lore => crate::tabs::lore(self, ui),
             Tab::Pipelines => crate::tabs::pipelines(self, ui),
+            Tab::Runtime => crate::runtime::runtime(self, ui),
             Tab::Releases => crate::tabs::releases(self, ui),
             Tab::Fetcher => crate::tabs::fetcher(self, ui),
             Tab::Picker => crate::tabs::picker(self, ui),

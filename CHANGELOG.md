@@ -9,6 +9,27 @@ app's runtime version is derived from the latest `v*` git tag (`app/build.rs` �
 
 ## [Unreleased]
 
+## [0.1.16] - 2026-07-01
+
+### Added
+- **Runtime tab — Synthetrix now controls ComfyUI's lifecycle, not just talks to
+  it.** A new 🖥 Runtime tab shells out to `comfyctl` (committed alongside) to run
+  the blocking preflight checklist, launch/stop the server on its managed venv with
+  hardware-tuned flags, and heal `extra_model_paths.yaml` to the vault/NVMe source
+  of truth. The doctor/preflight verdict renders as a colored checklist (OK/WARN/
+  FAIL/SKIP) with per-check fixes and a blockers summary; a live `:8188` status dot
+  shows whether the server is up. Long ops (a cold launch warms up for minutes) run
+  off the UI thread with the result drained back into the tab.
+- **`comfyctl` runtime manager committed** (`comfyctl.py` + `synthetrix/comfy/`):
+  `probe`/`rules` (machine + hardware→runtime compat), `preflight`/`doctor` (ordered
+  blocking checklist), `launch`/`stop` (detached-spawn lifecycle), and
+  `provision`/`heal` (venv/torch/nodes/paths). The Runtime tab is its GUI front end.
+
+### Config
+- New `comfy_manager_root` (dir holding `comfyctl.py`; empty => auto-detect by
+  walking up from cwd/exe) and `python_exe` (default `python`) fields, both
+  `#[serde(default)]` so older configs load unchanged.
+
 ## [0.1.15] - 2026-07-01
 
 ### Fixed

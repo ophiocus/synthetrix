@@ -1,6 +1,6 @@
 [package]
 name = "synthetrix"
-version = "0.1.15"
+version = "0.1.16"
 edition = "2021"
 authors = ["ophiocus <csantanad@gmail.com>"]
 description = "Per-IP creative-production orchestrator: forge, lore, prompts, pipelines, releases"
