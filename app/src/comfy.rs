@@ -179,7 +179,17 @@ fn obj_enum(client: &reqwest::blocking::Client, node: &str, field: &str) -> Vec<
 /// "2758FluxAsianUtopian_v51KreaFp8Noclip.safetensors" and
 /// "2758_hinaAsianFlux1-krea-dev_v51-fp8_noCLIP.safetensors" share
 /// {2758, asian, flux, krea, noclip}.
+/// The bare filename of a model reference: drops any author subfolder path, on
+/// either separator ("GGUFFlux\\Z\\WIP\\Fux.gguf" -> "Fux.gguf", "flux/vae.st" ->
+/// "vae.st"). ComfyUI enum values and vault files are matched on this.
+fn base(name: &str) -> &str {
+    name.rsplit(|c| c == '/' || c == '\\')
+        .next()
+        .unwrap_or(name)
+}
+
 fn tokens(name: &str) -> HashSet<String> {
+    let name = base(name);
     let stem = name.rsplit_once('.').map(|(a, _)| a).unwrap_or(name);
     let mut out = HashSet::new();
     let mut cur = String::new();
@@ -232,47 +242,98 @@ fn best_match(wanted: &str, candidates: &[String]) -> Option<String> {
     best.map(|(_, c)| c.clone())
 }
 
-/// (object_info node, input field, canonical NVMe subdir to hotload into) for a
-/// loader class. A model is hotloaded into the subdir its *loader* expects, even
-/// if the vault filed it elsewhere (e.g. a Flux "noclip" diffusion model the vault
-/// put under checkpoints still belongs in diffusion_models for a UNETLoader).
-fn loader_info(class_type: &str) -> Option<(&'static str, &'static str, &'static str)> {
-    if class_type.contains("CheckpointLoader") {
-        Some(("CheckpointLoaderSimple", "ckpt_name", "checkpoints"))
-    } else if class_type == "UNETLoader" {
-        Some(("UNETLoader", "unet_name", "diffusion_models"))
-    } else {
-        None
+/// A model-name slot in a loader node: which widget index (UI graphs) / input
+/// field (API graphs) carries a model filename, and the NVMe subdir the model is
+/// hotloaded into (the subdir the *loader* reads from, regardless of where the
+/// vault filed it).
+struct Slot {
+    ui_index: usize,
+    field: &'static str,
+    subdir: &'static str,
+}
+
+const fn slot(ui_index: usize, field: &'static str, subdir: &'static str) -> Slot {
+    Slot {
+        ui_index,
+        field,
+        subdir,
     }
 }
 
-/// Vault subdirs to search for a big model file, regardless of loader type — model
-/// files are routinely mis-categorized across these.
-const VAULT_SEARCH_DIRS: &[&str] = &["checkpoints", "diffusion_models", "unet"];
+/// The model-name slots for a loader class (UI + API). Covers the loaders a Flux/
+/// SDXL workflow actually uses — checkpoints, diffusion/UNET (incl. GGUF), VAE,
+/// CLIP (single/dual/triple, incl. GGUF), LoRA, ControlNet, upscalers — not just
+/// the two the old code handled. Empty => not a model loader, leave it alone.
+fn loader_slots(class_type: &str) -> Vec<Slot> {
+    match class_type {
+        c if c.contains("CheckpointLoader") => vec![slot(0, "ckpt_name", "checkpoints")],
+        "UNETLoader" => vec![slot(0, "unet_name", "diffusion_models")],
+        c if c.starts_with("UnetLoaderGGUF") => vec![slot(0, "unet_name", "unet")],
+        "VAELoader" => vec![slot(0, "vae_name", "vae")],
+        c if c.starts_with("TripleCLIPLoader") => vec![
+            slot(0, "clip_name1", "clip"),
+            slot(1, "clip_name2", "clip"),
+            slot(2, "clip_name3", "clip"),
+        ],
+        c if c.starts_with("DualCLIPLoader") => {
+            vec![slot(0, "clip_name1", "clip"), slot(1, "clip_name2", "clip")]
+        }
+        c if c.starts_with("CLIPLoader") => vec![slot(0, "clip_name", "clip")],
+        "LoraLoader" | "LoraLoaderModelOnly" => vec![slot(0, "lora_name", "loras")],
+        c if c.contains("ControlNetLoader") => vec![slot(0, "control_net_name", "controlnet")],
+        "UpscaleModelLoader" => vec![slot(0, "model_name", "upscale_models")],
+        _ => vec![],
+    }
+}
 
-/// Resolve `wanted` to a model ComfyUI can load. Returns Some(new_name) when the
-/// reference should change, None to keep it as-is. Order: keep if installed →
-/// match an installed file under a near-identical name → find it in the cold vault
-/// and hotload it (copy to the NVMe tier) → leave it (honest "missing model").
+/// Vault subdirs to search when hotloading, keyed by the target subdir. Big model
+/// files are routinely mis-filed across the diffusion trio, so those pool together.
+fn vault_dirs_for(subdir: &str) -> &'static [&'static str] {
+    match subdir {
+        "checkpoints" | "diffusion_models" | "unet" => &["checkpoints", "diffusion_models", "unet"],
+        "vae" => &["vae"],
+        "clip" => &["clip", "text_encoders", "clip_vision"],
+        "loras" => &["loras"],
+        "controlnet" => &["controlnet"],
+        "upscale_models" => &["upscale_models"],
+        _ => &[],
+    }
+}
+
+/// Resolve `wanted` (which may carry a foreign subfolder path) to a model ComfyUI
+/// can load, matching on the bare filename. Returns Some(new_name) when the
+/// reference should change, None to keep it as-is. Order: keep if installed
+/// verbatim → adopt the installed spelling if only the path/case differs → match a
+/// near-identical installed file → find it in the cold vault and hotload it → leave
+/// it (honest "missing model"). `class_type` is the object_info node to read
+/// installed values from.
 fn resolve_model(
     client: &reqwest::blocking::Client,
-    wanted: &str,
-    node: &str,
+    class_type: &str,
     field: &str,
+    wanted: &str,
     target_subdir: &str,
     vault_root: &str,
     nvme_root: &str,
 ) -> Option<String> {
-    let installed = obj_enum(client, node, field);
+    let installed = obj_enum(client, class_type, field);
     if installed.iter().any(|m| m == wanted) {
-        return None;
+        return None; // already exactly what ComfyUI lists
+    }
+    let wb = base(wanted).to_ascii_lowercase();
+    // same file, different spelling (author subfolder / case / separator): adopt
+    // ComfyUI's own spelling so the dropdown resolves.
+    if let Some(exact) = installed
+        .iter()
+        .find(|m| base(m).to_ascii_lowercase() == wb)
+    {
+        return Some(exact.clone());
     }
     if let Some(m) = best_match(wanted, &installed) {
         return Some(m);
     }
-    // search the cold vault broadly (the file may be mis-filed), then hotload the
-    // match into the subdir this loader actually reads from.
-    for sub in VAULT_SEARCH_DIRS {
+    // cold vault → hotload into the subdir this loader reads from.
+    for sub in vault_dirs_for(target_subdir) {
         let dir = Path::new(vault_root).join(sub);
         let rd = match std::fs::read_dir(&dir) {
             Ok(r) => r,
@@ -283,7 +344,10 @@ fn resolve_model(
             .filter_map(|e| {
                 let p = e.path();
                 let ext = p.extension().and_then(|x| x.to_str()).unwrap_or("");
-                if matches!(ext, "safetensors" | "ckpt" | "gguf" | "sft" | "pt" | "pth") {
+                if matches!(
+                    ext,
+                    "safetensors" | "ckpt" | "gguf" | "sft" | "pt" | "pth" | "bin"
+                ) {
                     p.file_name().and_then(|n| n.to_str()).map(String::from)
                 } else {
                     None
@@ -325,20 +389,25 @@ fn patch_model_names(
                     .and_then(|t| t.as_str())
                     .unwrap_or("")
                     .to_string();
-                let Some((node, field, target)) = loader_info(&t) else {
+                let slots = loader_slots(&t);
+                if slots.is_empty() {
+                    continue;
+                }
+                let Some(wv) = n.get_mut("widgets_values").and_then(|w| w.as_array_mut()) else {
                     continue;
                 };
-                if let Some(first) = n
-                    .get_mut("widgets_values")
-                    .and_then(|w| w.as_array_mut())
-                    .and_then(|a| a.get_mut(0))
-                {
-                    if let Some(cur) = first.as_str().map(String::from) {
-                        if let Some(rep) =
-                            resolve_model(client, &cur, node, field, target, vault_root, nvme_root)
-                        {
-                            *first = serde_json::Value::String(rep);
-                        }
+                for s in &slots {
+                    let Some(cur) = wv
+                        .get(s.ui_index)
+                        .and_then(|x| x.as_str())
+                        .map(String::from)
+                    else {
+                        continue;
+                    };
+                    if let Some(rep) =
+                        resolve_model(client, &t, s.field, &cur, s.subdir, vault_root, nvme_root)
+                    {
+                        wv[s.ui_index] = serde_json::Value::String(rep);
                     }
                 }
             }
@@ -350,15 +419,21 @@ fn patch_model_names(
                 .and_then(|c| c.as_str())
                 .unwrap_or("")
                 .to_string();
-            let Some((node, field, target)) = loader_info(&t) else {
+            let slots = loader_slots(&t);
+            if slots.is_empty() {
                 continue;
-            };
+            }
             if let Some(inp) = n.get_mut("inputs").and_then(|i| i.as_object_mut()) {
-                if let Some(cur) = inp.get(field).and_then(|x| x.as_str()).map(String::from) {
+                for s in &slots {
+                    // a wired link is an array, not a string — skip; only widget values resolve
+                    let Some(cur) = inp.get(s.field).and_then(|x| x.as_str()).map(String::from)
+                    else {
+                        continue;
+                    };
                     if let Some(rep) =
-                        resolve_model(client, &cur, node, field, target, vault_root, nvme_root)
+                        resolve_model(client, &t, s.field, &cur, s.subdir, vault_root, nvme_root)
                     {
-                        inp.insert(field.to_string(), serde_json::Value::String(rep));
+                        inp.insert(s.field.to_string(), serde_json::Value::String(rep));
                     }
                 }
             }
@@ -410,6 +485,49 @@ mod tests {
             "deliberate_v2.safetensors".to_string(),
         ];
         assert!(best_match("2758_hinaAsianFlux1-krea-dev.safetensors", &installed).is_none());
+    }
+
+    #[test]
+    fn base_strips_author_subfolders() {
+        assert_eq!(
+            base(r"GGUFFlux\Z\WIP\FuxCapacity4.0_Q8_0.gguf"),
+            "FuxCapacity4.0_Q8_0.gguf"
+        );
+        assert_eq!(base("flux/flux_vae.safetensors"), "flux_vae.safetensors");
+        assert_eq!(base("plain.safetensors"), "plain.safetensors");
+    }
+
+    #[test]
+    fn same_file_under_foreign_subfolder_matches_by_basename() {
+        // The exact-basename branch of resolve_model catches "same file, foreign
+        // path" (short names can share <3 tokens, so this must NOT rely on best_match).
+        let wanted = r"GGUFFlux\Z\WIP\FuxCapacity4.0_Q8_0.gguf";
+        let installed = "FuxCapacity4.0_Q8_0.gguf";
+        assert_eq!(
+            base(wanted).to_ascii_lowercase(),
+            base(installed).to_ascii_lowercase()
+        );
+    }
+
+    #[test]
+    fn fuzzy_match_still_ignores_subfolder_path() {
+        // Foreign subfolder path + a differently-spelled but same-model file.
+        let wanted = r"GGUFFlux\Z\WIP\2758FluxAsianUtopian_v51KreaFp8Noclip.safetensors";
+        let installed = vec!["2758_hinaAsianFlux1-krea-dev_v51-fp8_noCLIP.safetensors".to_string()];
+        assert_eq!(
+            best_match(wanted, &installed).as_deref(),
+            Some("2758_hinaAsianFlux1-krea-dev_v51-fp8_noCLIP.safetensors")
+        );
+    }
+
+    #[test]
+    fn loader_slots_cover_flux_stack() {
+        assert_eq!(loader_slots("UnetLoaderGGUF").len(), 1);
+        assert_eq!(loader_slots("VAELoader").len(), 1);
+        assert_eq!(loader_slots("TripleCLIPLoader").len(), 3);
+        assert_eq!(loader_slots("DualCLIPLoaderGGUF").len(), 2);
+        assert_eq!(loader_slots("LoraLoader").len(), 1);
+        assert!(loader_slots("KSampler").is_empty());
     }
 
     #[test]

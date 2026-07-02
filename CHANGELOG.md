@@ -9,7 +9,24 @@ app's runtime version is derived from the latest `v*` git tag (`app/build.rs` �
 
 ## [Unreleased]
 
-## [0.1.19] - 2026-07-01
+## [0.1.20] - 2026-07-01
+
+### Fixed
+- **Workflow model names are consistent again (the "FF DOUBLE / FuxCapacity" mess).**
+  Two defects: (1) `open_in_comfy` only resolved `CheckpointLoader`/`UNETLoader`, so
+  GGUF UNET, VAE, and CLIP (single/dual/triple) loaders kept the *original author's*
+  local paths (e.g. `GGUFFlux\Z\WIP\FuxCapacity4.0_Q8_0.gguf`) and showed up
+  missing/mismatched in ComfyUI; (2) those foreign subfolder paths were never
+  normalized, so the graph, the file on disk, and the loaded variable all read
+  differently.
+  - Model-name resolution now covers the whole Flux/SDXL loader stack — checkpoints,
+    diffusion/UNET incl. GGUF, VAE, CLIP (single/dual/triple incl. GGUF), LoRA,
+    ControlNet, upscalers — with per-slot hotload targets.
+  - Matching is **basename-aware**: an author's `A\B\name.gguf` resolves to the
+    installed/vault `name.gguf` (exact-basename first, then fuzzy tokens), and the
+    reference is rewritten to ComfyUI's own spelling.
+  - The in-app workflow graph now displays the **bare filename** for model refs
+    instead of the author's subfolder path, so label / file / loaded value agree.
 
 ### Fixed
 - **Runtime tab no longer needs (or mis-uses) a manually-typed path.** `comfyctl.py`

@@ -83,6 +83,33 @@ fn val_str(v: &Value) -> String {
     }
 }
 
+const MODEL_EXTS: &[&str] = &[
+    "safetensors",
+    "gguf",
+    "ckpt",
+    "pt",
+    "pth",
+    "sft",
+    "bin",
+    "vae",
+];
+
+/// Strip an author's subfolder path from a model-file reference so the graph shows
+/// the bare filename (matching the vault/manifest), e.g. `GGUFFlux\Z\WIP\Fux.gguf`
+/// -> `Fux.gguf`. Non-model strings (prompts, samplers) pass through untouched.
+fn norm_model_ref(s: &str) -> String {
+    let base = s.rsplit(|c| c == '/' || c == '\\').next().unwrap_or(s);
+    let is_model = base
+        .rsplit_once('.')
+        .map(|(_, e)| MODEL_EXTS.contains(&e.to_ascii_lowercase().as_str()))
+        .unwrap_or(false);
+    if is_model && base.len() < s.len() {
+        base.to_string()
+    } else {
+        s.to_string()
+    }
+}
+
 fn truncate(s: &str, max: usize) -> String {
     let s = s.replace('\n', " ");
     if s.chars().count() <= max {
@@ -136,7 +163,12 @@ fn parse_ui(v: &Value) -> WGraph {
             let widgets: Vec<String> = n
                 .get("widgets_values")
                 .and_then(|w| w.as_array())
-                .map(|a| a.iter().map(val_str).filter(|s| !s.is_empty()).collect())
+                .map(|a| {
+                    a.iter()
+                        .map(|v| norm_model_ref(&val_str(v)))
+                        .filter(|s| !s.is_empty())
+                        .collect()
+                })
                 .unwrap_or_default();
             let size = fit_size(
                 xy(n.get("size")).unwrap_or(egui::vec2(200.0, 100.0)),
@@ -224,7 +256,7 @@ fn parse_api(v: &Value) -> WGraph {
                         });
                     }
                 } else {
-                    widgets.push(format!("{in_name}: {}", val_str(val)));
+                    widgets.push(format!("{in_name}: {}", norm_model_ref(&val_str(val))));
                 }
             }
         }
